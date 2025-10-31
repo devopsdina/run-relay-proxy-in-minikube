@@ -1,0 +1,22 @@
+# Secret values files
+values-secrets.yaml
+*.secret.yaml
+*.secrets.yaml
+
+# Environment files
+.env
+.env.local
+
+# macOS
+.DS_Store
+
+# Editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Helm
+*.tgz
+

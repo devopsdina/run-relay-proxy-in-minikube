@@ -1,0 +1,140 @@
+# LaunchDarkly Relay Proxy - Minikube Configuration
+#
+# IMPORTANT: DO NOT commit SDK keys to version control!
+#
+# For local testing:
+#   cp values-secrets.yaml.example values-secrets.yaml
+#   Add SDK keys to values-secrets.yaml (gitignored)
+#   helm install ld-relay launchdarkly-ld-relay/ld-relay -f values.yaml -f values-secrets.yaml
+#
+# ============================================================================
+# Configuration Options
+# ============================================================================
+
+replicaCount: 1
+
+image:
+  repository: launchdarkly/ld-relay
+  pullPolicy: IfNotPresent
+  # tag: ""  # Defaults to chart appVersion
+
+service:
+  type: ClusterIP
+  ports:
+    - port: 8030
+      targetPort: 8030
+      protocol: TCP
+      name: api
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+# autoscaling:
+#   enabled: false
+#   minReplicas: 1
+#   maxReplicas: 100
+#   targetCPUUtilizationPercentage: 80
+#   targetMemoryUtilizationPercentage: 80
+
+# pod:
+#   annotations: {}
+#   labels: {}
+#   securityContext: {}
+#   disruptionBudget:
+#     enabled: false
+#     minAvailable: ""
+#     maxUnavailable: ""
+#   topologySpreadConstraints: []
+#   priorityClassName: ""
+
+# Container security context
+# securityContext: {}
+
+# Node scheduling
+# nodeSelector: {}
+# tolerations: []
+# affinity: {}
+
+# serviceAccount:
+#   create: true
+#   annotations: {}
+#   name: ""
+
+# ingress:
+#   enabled: false
+#   className: ""
+#   annotations: {}
+#   hosts: []
+#   tls: []
+
+# commonLabels: {}
+
+# imagePullSecrets: []
+
+initContainers:
+  - name: wait-for-redis
+    command:
+      - 'sh'
+      - '-c'
+      - |
+        echo "Waiting for Redis to be ready..."
+        until nc -z redis-master 6379; do
+          echo "Redis is unavailable - sleeping"
+          sleep 2
+        done
+        echo "Redis is ready!"
+
+# nameOverride: ""
+# fullnameOverride: ""
+
+# terminationGracePeriodSeconds: null
+
+# ============================================================================
+# Advanced Relay Configuration
+# ============================================================================
+# Additional environment variables for the relay container
+# See: https://docs.launchdarkly.com/home/relay-proxy/configuration
+#
+relay:
+  environment:
+    LOG_LEVEL: "debug"  # debug, info, warn, error
+
+#     # Redis configuration (for persistent storage and offline mode)
+#     # See README.md for Redis setup instructions
+    USE_REDIS: "true"
+    REDIS_HOST: "redis-master"  # Use "redis-master" if using Bitnami Redis chart
+    REDIS_PORT: "6379"
+#     # REDIS_TLS: "false"
+#     # CACHE_TTL: "30"  # Cache time-to-live in seconds
+#     
+#     # Port configuration
+#     PORT: "8030"
+#     
+#     # Metrics and monitoring
+#     PROMETHEUS_PORT: "8031"
+#
+  # Liveness and readiness probes
+  livenessProbe:
+    httpGet:
+      port: api
+      path: /status
+  
+  readinessProbe:
+    httpGet:
+      port: api
+      path: /status
+#
+#   # Lifecycle hooks
+#   lifecycle: []
+#
+#   # Offline mode configuration
+#   offlineMode:
+#     enabled: false
+#     # existingConfigMap: ""
+#     # mountPath: "/ldr"
+

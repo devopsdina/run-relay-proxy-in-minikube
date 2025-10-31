@@ -1,0 +1,89 @@
+# This configures the Bitnami Redis Helm chart for use with the Relay Proxy
+
+image:
+  registry: docker.io
+  repository: bitnami/redis
+  pullPolicy: IfNotPresent
+  # tag: ""  # Defaults to chart appVersion
+
+# Authentication configuration
+auth:
+  enabled: true
+  # Password is defined in values-secrets.yaml for security
+  # existingSecret: "redis-password"  # Optional: use existing secret
+  # existingSecretPasswordKey: "password"
+
+master:
+  # Disable persistence for local development (simpler for minikube)
+  # For production, enable persistence
+  persistence:
+    enabled: false
+    # enabled: true
+    # size: 8Gi
+    # storageClass: ""
+  service:
+    type: ClusterIP
+    ports:
+      redis: 6379
+  
+  # Resource limits for master
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Replica configuration
+replica:
+  # Number of Redis replicas
+  replicaCount: 1
+  
+  # Disable persistence for local development
+  persistence:
+    enabled: false
+    # enabled: true
+    # size: 8Gi
+  
+  # Resource limits for replicas
+  resources:
+    limits:
+      cpu: 250m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Metrics configuration (optional)
+metrics:
+  enabled: false
+  # Enable for production monitoring
+  # enabled: true
+  # serviceMonitor:
+  #   enabled: true
+
+# Network Policy (optional)
+# networkPolicy:
+#   enabled: true
+#   allowExternal: false
+
+# Security context
+# containerSecurityContext:
+#   enabled: true
+#   runAsUser: 1001
+#   runAsNonRoot: true
+
+
+# Common labels
+# commonLabels:
+#   app: launchdarkly-relay-redis
+
+# For production environments, consider:
+# - Enabling persistence
+# - Increasing replica count
+# - Enabling metrics
+# - Configuring backups
+# - Setting resource limits appropriately
+# - Enabling network policies
+
