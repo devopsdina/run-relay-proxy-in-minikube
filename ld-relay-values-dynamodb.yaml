@@ -1,0 +1,10 @@
+# DynamoDB Datastore Configuration Overlay
+# This file is merged with ld-relay-values.yaml when DynamoDB is selected
+
+relay:
+  environment:
+    USE_REDIS: "false"
+    USE_DYNAMODB: "true"
+    DYNAMODB_TABLE: "ld-relay"
+    DYNAMODB_URL: "http://dynamodb-local:8000"
+

@@ -2,6 +2,54 @@
 
 This guide walks you through setting up and running the [LaunchDarkly Relay Proxy](https://docs.launchdarkly.com/home/relay-proxy) locally using minikube and Helm.
 
+## Quick Start (Interactive Setup) ⚡
+
+The easiest way to get started is using the interactive setup script with automatic configuration:
+
+### 1. Prerequisites
+
+**Install required tools:**
+```bash
+# macOS
+brew install minikube kubectl helm helmfile gum
+
+# Start minikube
+minikube start
+```
+
+### 2. Configure LaunchDarkly SDK Keys
+
+```bash
+cp ld-relay-secrets.yaml.example ld-relay-secrets.yaml
+# Edit ld-relay-secrets.yaml and add your LaunchDarkly SDK keys
+```
+
+You must create this file and update it accordingly for the relay-proxy to start
+
+### 3. Run Interactive Setup
+
+```bash
+./setup.sh
+```
+
+**The script will guide you through:**
+- ✅ Pre-flight checks for all dependencies
+- ✅ Datastore selection (Redis, DynamoDB, or in-memory)
+- ✅ Relay mode (Proxy or Daemon mode)
+- ✅ Monitoring stack (optional Prometheus & Grafana)
+- ✅ Database viewer UI (optional RedisInsight or DynamoDB Admin)
+- ✅ Automatic configuration and deployment
+- ✅ Optional port forwarding for all services
+
+The script will end with asking you if you'd like to forward the ports for the configuration selected.  It is highly recommended to select `yes` so you can access the pods on your local machine.
+
+### 4. Access Your Services
+
+After deployment completes, you can run also `./check-status.sh` or any kubectl commands to see the status of pods and their URLs with port numbers.
+
+---
+
+
 ## Overview
 
 The LaunchDarkly Relay Proxy is a small application that connects to LaunchDarkly's streaming API and acts as a local proxy for LaunchDarkly SDKs. This is useful for:
@@ -93,7 +141,7 @@ For local testing, create separate secrets files:
 
 ```bash
 # Copy the example secrets files
-cp ld-secrets.yaml.example ld-relay-secrets.yaml
+cp ld-relay-secrets.yaml.example ld-relay-secrets.yaml
 cp redis-secrets.yaml.example redis-secrets.yaml
 ```
 
@@ -111,88 +159,9 @@ auth:
   password: "your-redis-password"  # Must match REDIS_PASSWORD above
 ```
 
+NOTE: For DynamoDB, we do not need a separate secrets file for local, fake values can be passed and are already set.
+
 You can name the environment anything you like (e.g., `LD_ENV_production`, `LD_ENV_test`, `LD_ENV_development`).
-
-**Note:** Both secrets files are in `.gitignore` and will not be committed to version control.
-
-### Step 4: Install with Helmfile (Recommended)
-
-Deploy both Redis and the Relay Proxy together:
-
-```bash
-# Update Helm repositories
-helm repo update
-
-# Deploy everything
-helmfile sync
-```
-
-**Or install manually with Helm:**
-
-```bash
-# Install Redis first
-helm install redis bitnami/redis \
-  -f redis-values.yaml \
-  -f redis-secrets.yaml
-
-# Then install LD Relay
-helm install ld-relay launchdarkly-ld-relay/ld-relay \
-  -f ld-relay-values.yaml \
-  -f ld-relay-secrets.yaml
-```
-
-### Step 5: Verify the Deployment
-
-Check that the pod is running:
-
-```bash
-kubectl get pods
-```
-
-You should see output like:
-```
-NAME                        READY   STATUS    RESTARTS   AGE
-ld-relay-xxxxxxxxxx-xxxxx   1/1     Running   0          30s
-```
-
-View the logs:
-```bash
-kubectl logs -l app.kubernetes.io/name=ld-relay --follow
-```
-
-### Step 6: Access the Relay Proxy
-
-The Relay Proxy runs on port 8030. To access it locally, set up port forwarding:
-
-```bash
-kubectl port-forward service/ld-relay 8030:8030
-```
-
-Keep this terminal window open. The Relay Proxy is now accessible at `http://localhost:8030/status`.
-
-You could also forward port 8080 to 8030, but ensure to his the `/status` endpoint or else you will get a 404.  The commands to do this are returned after running the helm install command.
-
-### Step 7: Test the Relay Proxy
-
-In a new terminal window, test the status endpoint:
-
-```bash
-curl http://localhost:8030/status
-```
-
-You should see a response like:
-```json
-{
-  "environments": {
-    "production": {
-      "status": "connected"
-    }
-  },
-  "status": "healthy"
-}
-```
-
-**Note:** The relay proxy doesn't serve content at the root path `/`. Always use `/status` or other specific endpoints.
 
 ## Configuration
 
@@ -208,15 +177,6 @@ relay:
     LD_ENV_production: "sdk-prod-key"
     LD_ENV_staging: "sdk-staging-key"
     LD_ENV_development: "sdk-dev-key"
-```
-
-Or with Kubernetes secrets:
-
-```bash
-kubectl create secret generic ld-relay-secrets \
-  --from-literal=LD_ENV_production="sdk-prod-key" \
-  --from-literal=LD_ENV_staging="sdk-staging-key" \
-  --from-literal=LD_ENV_development="sdk-dev-key"
 ```
 
 ### Resource Limits
@@ -266,138 +226,236 @@ const client = LDClient.initialize('your-client-side-id', user, {
 });
 ```
 
-**Python:**
-```python
-config = Config(
-    base_uri='http://localhost:8030',
-    stream_uri='http://localhost:8030',
-    events_uri='http://localhost:8030'
-)
-client = ldclient.Client('your-sdk-key', config)
-```
-
 **Note:** When using the Relay Proxy in minikube from outside the cluster, you'll need to use `localhost:8030` with port-forwarding. For SDKs running inside the cluster, use the service name: `http://ld-relay:8030`.
 
-## Redis Persistent Store (Optional)
+## Persistent Datastore Options
 
-Using Redis with the Relay Proxy provides several benefits:
-- **Persistent caching** of flag data
-- **Offline mode** - serve flags even if LaunchDarkly is unreachable
-- **Better performance** with reduced API calls
-- **Shared state** across multiple relay proxy instances
+The LD Relay can be configured with different persistent datastores:
 
-### Installing Redis
+- Redis
+- DynamoDB
 
-The easiest way to run Redis in minikube is using the Bitnami Redis Helm chart:
+DynamoDB uses fake AWS credentials.
 
-#### Step 1: Add Bitnami Repository
+### In-Memory Only
 
+No persistent storage - minimal setup for testing.
+
+---
+
+## Database Viewer UI (Optional)
+
+Optional web-based management interfaces for your datastore:
+
+- RedisInsight (for Redis)
+- DynamoDB Admin
+
+
+**✨ Zero Configuration:** Database connection to `redis-master:6379` is automatically configured on deployment. Just open the UI and start browsing!
+
+The `ld-relay` table is automatically connected if you select `yes` for the Database Management UI
+
+---
+
+## Monitoring with Prometheus and Grafana
+
+This setup includes Prometheus and Grafana for monitoring your LaunchDarkly Relay Proxy and Redis instances.
+
+### Accessing Grafana Dashboard
+
+To access the Grafana web interface:
+
+- open your browser to http://localhost:3000
+
+**Default Credentials:**
+- Username: `admin`
+- Password: `admin`
+
+### Accessing Prometheus UI
+
+To access the Prometheus web interface:
+
+- open your browser to http://localhost:9090
+
+### LD Relay Metrics
+
+The LaunchDarkly Relay Proxy exposes Prometheus metrics on port 8031. To view them directly:
+
+**Common metrics to monitor:**
+
+- `ld_connections` - Number of active connections to LaunchDarkly
+- `ld_requests_total` - Total number of HTTP requests received
+- `ld_stream_connections` - Number of active streaming connections
+- `ld_requests_duration_seconds` - Request duration histogram
+
+### Health Check Monitoring with Blackbox Exporter
+
+The monitoring stack includes Prometheus Blackbox Exporter, which actively probes the LD Relay `/status` endpoint to validate actual service health. This provides more accurate monitoring than just checking if the metrics endpoint responds.
+
+**How it works:**
+- Blackbox Exporter makes HTTP requests to `http://ld-relay:8030/status` every 30 seconds
+- It validates the response contains `"status":"healthy"` in the JSON
+- The result is exposed as a Prometheus metric: `probe_success{service="ld-relay"}`
+- Alerts trigger when the probe fails for more than 2 minutes
+
+**View blackbox exporter targets:**
 ```bash
-helm repo add bitnami https://charts.bitnami.com/bitnami
-helm repo update
+kubectl port-forward -n monitoring svc/prometheus-blackbox-exporter 9115:9115
+# Open: http://localhost:9115/targets
 ```
 
-#### Step 2: Configure Redis Password
+### Redis Metrics
 
-Edit your `redis-secrets.yaml` and set a Redis password:
+Redis metrics are automatically collected by the Prometheus exporter and available in Prometheus/Grafana.
+
+**To import a pre-built Redis dashboard in Grafana:**
+
+1. Log in to Grafana (http://localhost:3000) - **Username:** `admin` **Password:** `admin`
+2. Click the "+" icon in the sidebar → Import
+3. Enter dashboard ID: `11835` or `14091` (popular Redis dashboards)
+4. Click "Load"
+5. Select the Prometheus data source
+6. Click "Import"
+
+### Creating Custom LD Relay Dashboards
+
+In Grafana, you can create custom dashboards to visualize:
+
+- **Connection count over time**: Track `ld_connections` metric
+- **Request rate**: Query `rate(ld_requests_total[5m])`
+- **Error rate**: Track failed requests
+- **Response time percentiles**: Use `ld_requests_duration_seconds` histogram
+
+### Checking Monitoring Stack Status
+
+Monitoring components run in the monitoring namespace.
+
+```bash
+kubectl get pods -n monitoring
+```
+
+## Setting Up Alerts
+
+### Deploy Alert Rules
+
+Alert rules for LD Relay and Redis are defined in `ld-relay-alerts.yaml`.
+
+**Pre-configured alerts include:**
+
+**Core LD Relay alerts (always active):**
+- `LDRelayUnhealthy` - Relay proxy /status endpoint health check failed (uses blackbox exporter)
+- `LDRelayMetricsDown` - Relay proxy metrics endpoint is not responding
+- `LDRelayNoConnections` - No active connections to LaunchDarkly
+- `LDRelayHighErrorRate` - Error rate above 5%
+- `LDRelayFrequentRestarts` - Pod restarting frequently
+
+**Datastore-specific alerts (conditional based on DATASTORE selection):**
+- `RedisDown` - Redis is not responding (only when `DATASTORE=redis`)
+- `RedisHighMemoryUsage` - Redis memory above 80% (only when `DATASTORE=redis`)
+- `DynamoDBLocalDown` - DynamoDB Local is not responding (only when `DATASTORE=dynamodb`)
+
+> **Note:** Datastore alerts are automatically applied based on your deployment configuration. This prevents false positives when a datastore isn't deployed.
+
+### Configure Notification Channels
+
+To receive alerts via email, Slack, PagerDuty, etc., update `prometheus-values.yaml`:
+
+**Example: Slack notifications**
+```yaml
+alertmanager:
+  config:
+    receivers:
+      - name: 'slack'
+        slack_configs:
+          - api_url: 'https://hooks.slack.com/services/YOUR/WEBHOOK/URL'
+            channel: '#alerts'
+            title: 'LD Relay Alert'
+```
+
+**Example: Email notifications**
+```yaml
+alertmanager:
+  config:
+    global:
+      smtp_smarthost: 'smtp.gmail.com:587'
+      smtp_from: 'alerts@example.com'
+      smtp_auth_username: 'your-email@gmail.com'
+      smtp_auth_password: 'your-app-password'
+    receivers:
+      - name: 'email'
+        email_configs:
+          - to: 'team@example.com'
+```
+
+**Example: Webhook notifications**
+```yaml
+alertmanager:
+  config:
+    receivers:
+      - name: 'webhook'
+        webhook_configs:
+          - url: 'http://your-webhook-endpoint'
+```
+
+## Configuration Reference
+
+### Default LD Relay Settings
+
+The relay is configured with optimized settings for local development:
 
 ```yaml
-redis:
-  auth:
-    password: "your-secure-redis-password"
+CACHE_TTL: "-1"  # Infinite cache (never expire)
+IGNORE_CONNECTION_ERRORS: "true"  # Continue serving from cache if LaunchDarkly is unreachable
+INIT_TIMEOUT: "5s"  # Initial connection timeout
+LOG_LEVEL: "debug"  # Verbose logging for development
 ```
 
-### Deploying
+### Datastore Configuration
 
-For managing multiple Helm releases together, use [Helmfile](https://github.com/helmfile/helmfile):
+**Redis:**
+- Infinite cache TTL configured
+- Connection: `redis-master:6379`
+- Password configured via `redis-secrets.yaml`
 
-1. **Install Helmfile**:
-   ```bash
-   # macOS
-   brew install helmfile
-   ```
+**DynamoDB:**
+- Table name: `ld-relay`
+- Key schema: `namespace` (HASH) + `key` (RANGE)
+- Endpoint: `http://dynamodb-local:8000`
+- Fake credentials: `fakeAccessKeyId` / `fakeSecretAccessKey`
 
-2. **Deploy both at once**:
-   ```bash
-   helmfile sync
-   ```
+### Port Reference
 
-   Benefits:
-   - Declarative configuration
-   - Automatic dependency ordering
-   - Easy to version control
-   - Single command to deploy everything
+Select `yes` for port forwarding during the setup.sh to automatically have all ports forwarded for what you chose to deploy.
 
-#### Option 3: Manual Sequential Deployment
+| Service | Port | Purpose |
+|---------|------|---------|
+| LD Relay | 8030 | API/Status endpoint |
+| LD Relay | 8031 | Prometheus metrics |
+| Redis | 6379 | Redis server |
+| RedisInsight | 8001 | Web UI |
+| DynamoDB Local | 8000 | DynamoDB API |
+| DynamoDB Admin | 8001 | Web UI |
+| Grafana | 3000 | Monitoring dashboard |
+| Prometheus | 9090 | Metrics UI |
 
-If you prefer manual control:
+### Troubleshooting
 
+**LD Relay not starting:**
 ```bash
-# 1. Deploy Redis first
-helm install redis bitnami/redis \
-  -f redis-values.yaml \
-  -f redis-secrets.yaml \
-  --wait  # Wait for Redis to be ready
+# Check logs
+kubectl logs -l app.kubernetes.io/name=ld-relay --tail=50
 
-# 2. Wait for Redis pod to be ready
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=redis --timeout=300s
-
-# 3. Deploy Relay Proxy
-helm install ld-relay launchdarkly-ld-relay/ld-relay \
-  -f ld-relay-values.yaml \
-  -f ld-relay-secrets.yaml
+# Check status
+kubectl get pods -l app.kubernetes.io/name=ld-relay
 ```
 
-The `--wait` flag tells Helm to wait until all resources are ready before returning.
-
-
-## Updating the Deployment
-
-To update your configuration:
-
-1. Edit `ld-relay-values.yaml`, `ld-relay-secrets.yaml`, `redis-values.yaml`, or `redis-secrets.yaml` as needed
-2. Upgrade the releases:
-   ```bash
-   # Using Helmfile (recommended)
-   helmfile apply
-   
-   # Or upgrade individually with Helm
-   helm upgrade redis bitnami/redis \
-     -f redis-values.yaml \
-     -f redis-secrets.yaml
-   
-   helm upgrade ld-relay launchdarkly-ld-relay/ld-relay \
-     -f ld-relay-values.yaml \
-     -f ld-relay-secrets.yaml
-   ```
-
-## Cleanup
-
-### Uninstall the Relay Proxy
-
+**Clean up everything:**
 ```bash
-helm uninstall ld-relay
+# Delete all deployments
+./setup.sh  # Will detect existing deployments and prompt for cleanup
 ```
 
-### Uninstall Redis (if installed)
-
-```bash
-helm uninstall redis
-```
-
-### Stop minikube
-
-```bash
-minikube stop
-```
-
-### Delete the minikube Cluster
-
-To completely remove the minikube cluster:
-
-```bash
-minikube delete
-```
+---
 
 ## Additional Resources
 
@@ -406,6 +464,7 @@ minikube delete
 - [Relay Proxy Configuration Reference](https://docs.launchdarkly.com/home/relay-proxy/configuration)
 - [Using Redis with Relay Proxy](https://docs.launchdarkly.com/home/relay-proxy/using#using-redis)
 - [Bitnami Redis Helm Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
+- [kube-prometheus-stack Chart](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)
 - [minikube Documentation](https://minikube.sigs.k8s.io/docs/)
 - [Helm Documentation](https://helm.sh/docs/)
 

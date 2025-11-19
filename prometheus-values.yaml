@@ -1,0 +1,166 @@
+# Kube-Prometheus-Stack Configuration for Minikube
+# Monitors LaunchDarkly Relay Proxy and Redis
+
+# Grafana configuration
+grafana:
+  enabled: true
+  persistence:
+    enabled: false  # Ephemeral storage for local dev
+  adminPassword: admin
+  defaultDashboardsEnabled: true
+  service:
+    type: ClusterIP
+
+# Prometheus configuration
+prometheus:
+  prometheusSpec:
+    # Disable persistent storage (ephemeral for local dev)
+    storageSpec: {}
+    retention: 2h
+    
+    # Allow discovery of ServiceMonitors and PrometheusRules across all namespaces
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector:
+      matchLabels: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelector: {}
+    ruleSelectorNilUsesHelmValues: false
+    
+    # Custom alert rules for LD Relay
+    additionalPrometheusRulesMap:
+      ld-relay-rules:
+        groups:
+          - name: ld-relay
+            interval: 30s
+            rules:
+              # Alert when LD Relay health check fails (uses blackbox exporter)
+              - alert: LDRelayUnhealthy
+                expr: probe_success{job="prometheus-blackbox-exporter", target="ld-relay-status"} == 0
+                for: 30s
+                labels:
+                  severity: critical
+                annotations:
+                  summary: "LD Relay Health Check Failed"
+                  description: "LD Relay /status endpoint is not returning healthy status for more than 2 minutes."
+              
+              # Alert when LD Relay metrics endpoint is down (fallback)
+              - alert: LDRelayMetricsDown
+                expr: up{job="ld-relay"} == 0
+                for: 2m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "LD Relay Metrics Endpoint Down"
+                  description: "LD Relay metrics endpoint at {{ $labels.instance }} has been down for more than 2 minutes."
+              
+              # Alert when LD Relay has no active connections to LaunchDarkly
+              - alert: LDRelayConnectionLost
+                expr: ld_connections < 1
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "LD Relay has no active connections to LaunchDarkly"
+                  description: "LD Relay instance {{ $labels.instance }} has had no active connections for 5 minutes."
+              
+              # Alert on high error rate
+              - alert: LDRelayHighErrorRate
+                expr: |
+                  rate(ld_requests_total{status=~"5.."}[5m]) / 
+                  rate(ld_requests_total[5m]) > 0.05
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "LD Relay has high error rate"
+                  description: "LD Relay instance {{ $labels.instance }} has error rate above 5% for 5 minutes."
+              
+              # Alert when pod is restarting frequently
+              - alert: LDRelayFrequentRestarts
+                expr: rate(kube_pod_container_status_restarts_total{pod=~"ld-relay.*"}[15m]) > 0
+                for: 5m
+                labels:
+                  severity: warning
+                annotations:
+                  summary: "LD Relay pod is restarting frequently"
+                  description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes."
+    
+    # Additional scrape configs for LD Relay
+    additionalScrapeConfigs:
+      - job_name: 'ld-relay'
+        kubernetes_sd_configs:
+          - role: pod
+            namespaces:
+              names:
+                - default
+        relabel_configs:
+          - source_labels: [__meta_kubernetes_pod_label_app_kubernetes_io_name]
+            action: keep
+            regex: ld-relay
+          - source_labels: [__meta_kubernetes_pod_container_port_name]
+            action: keep
+            regex: metrics
+          - source_labels: [__meta_kubernetes_pod_name]
+            target_label: pod
+          - source_labels: [__meta_kubernetes_namespace]
+            target_label: namespace
+
+# Alertmanager - enabled for alerting
+alertmanager:
+  enabled: true
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['alertname', 'job']
+      group_wait: 10s
+      group_interval: 10s
+      repeat_interval: 12h
+      receiver: 'default'
+    receivers:
+      - name: 'default'
+        # Add your notification config here (webhook, email, Slack, etc.)
+        # webhook_configs:
+        #   - url: 'http://your-webhook-url'
+
+# Node Exporter - disabled for local dev (not needed)
+nodeExporter:
+  enabled: false
+
+# Kube State Metrics - enabled to monitor cluster state
+kubeStateMetrics:
+  enabled: true
+
+# Prometheus Operator
+prometheusOperator:
+  enabled: true
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+# Disable default monitoring for kubelets, API servers, etc. to reduce resource usage
+kubeApiServer:
+  enabled: false
+
+kubelet:
+  enabled: false
+
+kubeControllerManager:
+  enabled: false
+
+coreDns:
+  enabled: false
+
+kubeEtcd:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
+
+kubeProxy:
+  enabled: false
+

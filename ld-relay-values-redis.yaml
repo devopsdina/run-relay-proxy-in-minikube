@@ -1,0 +1,10 @@
+# Redis Datastore Configuration Overlay
+# This file is merged with ld-relay-values.yaml when Redis is selected
+
+relay:
+  environment:
+    USE_REDIS: "true"
+    USE_DYNAMODB: "false"
+    REDIS_HOST: "redis-master"
+    REDIS_PORT: "6379"
+

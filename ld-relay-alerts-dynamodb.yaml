@@ -1,0 +1,28 @@
+# DynamoDB-specific alerts
+# Only apply when DATASTORE=dynamodb
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ld-relay-dynamodb-alerts
+  namespace: default
+  labels:
+    app: ld-relay
+    prometheus: kube-prometheus-stack
+spec:
+  groups:
+    - name: ld-relay-dynamodb
+      interval: 30s
+      rules:
+        # Alert when DynamoDB Local is down
+        - alert: DynamoDBLocalDown
+          expr: up{job="dynamodb-local"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "DynamoDB Local is down"
+            description: "DynamoDB Local instance has been down for more than 2 minutes."
+        
+        # Note: DynamoDB Local doesn't expose detailed metrics like Redis does
+        # Additional custom metrics would need to be instrumented
+

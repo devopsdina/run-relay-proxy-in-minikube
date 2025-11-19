@@ -1,0 +1,65 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ld-relay-alerts
+  namespace: default
+  labels:
+    app: ld-relay
+    prometheus: kube-prometheus-stack
+spec:
+  groups:
+    - name: ld-relay
+      interval: 30s
+      rules:
+        # Alert when LD Relay health check fails (uses blackbox exporter)
+        - alert: LDRelayUnhealthy
+          expr: probe_success{job="prometheus-blackbox-exporter", target="ld-relay-status"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "LD Relay Health Check Failed"
+            description: "LD Relay /status endpoint is not returning healthy status for more than 2 minutes."
+        
+        # Alert when LD Relay metrics endpoint is down (fallback)
+        - alert: LDRelayMetricsDown
+          expr: up{job="ld-relay"} == 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay Metrics Endpoint Down"
+            description: "LD Relay metrics endpoint has been down for more than 2 minutes."
+        
+        # Alert when LD Relay has no active connections to LaunchDarkly
+        - alert: LDRelayNoConnections
+          expr: ld_connections < 1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay has no active connections to LaunchDarkly"
+            description: "LD Relay pod {{ $labels.pod }} has had no active connections for 5 minutes."
+        
+        # Alert on high error rate (if ld_requests_total exists)
+        - alert: LDRelayHighErrorRate
+          expr: |
+            rate(ld_requests_total{status=~"5.."}[5m]) / 
+            rate(ld_requests_total[5m]) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay has high error rate"
+            description: "LD Relay pod {{ $labels.pod }} has error rate above 5% for 5 minutes."
+        
+        # Alert when pod is restarting frequently
+        - alert: LDRelayFrequentRestarts
+          expr: rate(kube_pod_container_status_restarts_total{pod=~"ld-relay.*"}[15m]) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay pod is restarting frequently"
+            description: "Pod {{ $labels.pod }} has restarted {{ $value }} times in the last 15 minutes."
+

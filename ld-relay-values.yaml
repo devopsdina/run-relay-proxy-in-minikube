@@ -25,6 +25,10 @@ service:
       targetPort: 8030
       protocol: TCP
       name: api
+    - port: 8031
+      targetPort: 8031
+      protocol: TCP
+      name: metrics
 
 resources:
   limits:
@@ -104,30 +108,59 @@ relay:
   environment:
     LOG_LEVEL: "debug"  # debug, info, warn, error
 
-#     # Redis configuration (for persistent storage and offline mode)
-#     # See README.md for Redis setup instructions
-    USE_REDIS: "true"
+    # Redis configuration (for persistent storage and offline mode)
+    # See README.md for Redis setup instructions
+    # Note: USE_REDIS is controlled by datastore overlay files (ld-relay-values-redis.yaml, etc.)
+    USE_REDIS: "false"
     REDIS_HOST: "redis-master"  # Use "redis-master" if using Bitnami Redis chart
     REDIS_PORT: "6379"
-#     # REDIS_TLS: "false"
-#     # CACHE_TTL: "30"  # Cache time-to-live in seconds
-#     
-#     # Port configuration
-#     PORT: "8030"
-#     
-#     # Metrics and monitoring
-#     PROMETHEUS_PORT: "8031"
-#
+    # REDIS_TLS: "false"
+    
+    # Cache configuration
+    CACHE_TTL: "-1s"  # -1 = infinite cache TTL (never expire cached flags)
+    
+    # Connection handling
+    IGNORE_CONNECTION_ERRORS: "true"  # Continue serving from cache even if LaunchDarkly is unreachable
+    INIT_TIMEOUT: "5s"  # Currently using default: 10 seconds (timeout for initial connection)
+    
+    # Port configuration
+    # PORT: "8030"
+    
+    # Metrics and monitoring
+    USE_PROMETHEUS: "true"
+    PROMETHEUS_PORT: "8031"
+
   # Liveness and readiness probes
+  # Override default httpGet probes to check connectionStatus JSON field
   livenessProbe:
-    httpGet:
-      port: api
-      path: /status
-  
+    httpGet: null  # Explicitly disable httpGet handler
+    exec:
+      command:
+        - sh
+        - -c
+        - |
+          RESPONSE=$(wget -qO- http://localhost:8030/status || exit 1)
+          echo "$RESPONSE" | grep -q '"status":"healthy"' || exit 1
+          exit 0
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+
   readinessProbe:
-    httpGet:
-      port: api
-      path: /status
+    httpGet: null  # Explicitly disable httpGet handler
+    exec:
+      command:
+        - sh
+        - -c
+        - |
+          RESPONSE=$(wget -qO- http://localhost:8030/status || exit 1)
+          echo "$RESPONSE" | grep -q '"status":"healthy"' || exit 1
+          exit 0
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 3
 #
 #   # Lifecycle hooks
 #   lifecycle: []

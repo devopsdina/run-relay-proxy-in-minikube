@@ -1,0 +1,49 @@
+# Prometheus Blackbox Exporter Configuration
+# Probes the LD Relay /status endpoint to validate actual health
+
+# Module configuration - defines how to probe endpoints
+config:
+  modules:
+    # HTTP probe that checks LD Relay /status endpoint
+    http_ld_status:
+      prober: http
+      timeout: 5s
+      http:
+        valid_status_codes: [200]
+        method: GET
+        fail_if_body_not_matches_regexp:
+          - '"status":"healthy"'
+        preferred_ip_protocol: "ip4"
+
+# Service configuration
+service:
+  type: ClusterIP
+  port: 9115
+
+# Resource limits for minikube
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# ServiceMonitor for Prometheus Operator to discover this exporter
+serviceMonitor:
+  enabled: true
+  defaults:
+    labels:
+      prometheus: kube-prometheus-stack
+    interval: 30s
+    scrapeTimeout: 10s
+  targets:
+    - name: ld-relay-status
+      url: http://ld-relay.default.svc.cluster.local:8030/status
+      module: http_ld_status
+      metricRelabelings:
+        # Replace the service label with "ld-relay" for proper alert matching
+        - sourceLabels: [service]
+          targetLabel: service
+          replacement: ld-relay
+
