@@ -1,0 +1,169 @@
+# Helmfile for deploying LaunchDarkly Relay Proxy
+#
+# This file supports conditional deployment based on environment variables:
+#   DATASTORE: redis|dynamodb|none (default: redis)
+#   MONITORING: full|none (default: full)
+#   DB_VIEWER: true|false (default: false) - Deploy database management UI
+#
+# Usage with interactive setup:
+#   ./setup.sh
+#
+# Usage with direct helmfile:
+#   DATASTORE=redis MONITORING=full DB_VIEWER=true helmfile sync
+#
+# For more info: https://github.com/helmfile/helmfile
+
+---
+
+repositories:
+  - name: launchdarkly-ld-relay
+    url: https://launchdarkly.github.io/ld-relay-helm
+  - name: bitnami
+    url: https://charts.bitnami.com/bitnami
+  - name: prometheus-community
+    url: https://prometheus-community.github.io/helm-charts
+
+releases:
+  # Redis - only deployed when DATASTORE=redis
+  {{ if eq (env "DATASTORE" | default "redis") "redis" }}
+  - name: redis
+    namespace: default
+    chart: bitnami/redis
+    version: ""
+    values:
+      - redis-values.yaml
+      - redis-secrets.yaml
+  {{ end }}
+
+  # DynamoDB Local - deployed via kubectl when DATASTORE=dynamodb
+  {{ if eq (env "DATASTORE" | default "redis") "dynamodb" }}
+  - name: dynamodb-local
+    namespace: default
+    chart: ./
+    version: ""
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "dynamodb-local.yaml"]
+      - events: ["postsync"]
+        showlogs: true
+        command: "sh"
+        args:
+          - "-c"
+          - |
+            echo "Creating DynamoDB table for LD Relay..."
+            kubectl apply -f dynamodb-config-job.yaml
+            echo "Waiting for table creation job to complete..."
+            kubectl wait --for=condition=complete job/dynamodb-config --timeout=180s || echo "Warning: Table creation job did not complete in time"
+      - events: ["postuninstall"]
+        showlogs: true
+        command: "kubectl"
+        args: ["delete", "-f", "dynamodb-local.yaml", "--ignore-not-found=true"]
+      - events: ["postuninstall"]
+        showlogs: true
+        command: "kubectl"
+        args: ["delete", "-f", "dynamodb-config-job.yaml", "--ignore-not-found=true"]
+  {{ end }}
+
+  # LD Relay - always deployed with conditional datastore configuration
+  - name: ld-relay
+    namespace: default
+    chart: launchdarkly-ld-relay/ld-relay
+    version: ""
+    values:
+      - ld-relay-values.yaml
+      - ld-relay-secrets.yaml
+      {{ if eq (env "DATASTORE" | default "redis") "redis" }}
+      - ld-relay-values-redis.yaml
+      - redis-secrets.yaml
+      {{ else if eq (env "DATASTORE" | default "redis") "dynamodb" }}
+      - ld-relay-values-dynamodb.yaml
+      {{ else }}
+      - ld-relay-values-none.yaml
+      {{ end }}
+    {{ if eq (env "DATASTORE" | default "redis") "redis" }}
+    needs:
+      - redis
+    {{ else if eq (env "DATASTORE" | default "redis") "dynamodb" }}
+    needs:
+      - dynamodb-local
+    {{ end }}
+
+  # Monitoring Stack - only deployed when MONITORING=full
+  {{ if eq (env "MONITORING" | default "full") "full" }}
+  - name: kube-prometheus-stack
+    namespace: monitoring
+    chart: prometheus-community/kube-prometheus-stack
+    version: ""
+    values:
+      - prometheus-values.yaml
+    hooks:
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "ld-relay-alerts.yaml"]
+      {{ if eq (env "DATASTORE" | default "redis") "redis" }}
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "ld-relay-alerts-redis.yaml"]
+      {{ else if eq (env "DATASTORE" | default "redis") "dynamodb" }}
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "ld-relay-alerts-dynamodb.yaml"]
+      {{ end }}
+
+  # Blackbox Exporter - probes LD Relay /status endpoint
+  - name: prometheus-blackbox-exporter
+    namespace: monitoring
+    chart: prometheus-community/prometheus-blackbox-exporter
+    version: ""
+    values:
+      - blackbox-exporter-values.yaml
+    needs:
+      - kube-prometheus-stack
+  {{ end }}
+
+  # RedisInsight - deployed when DB_VIEWER=true and DATASTORE=redis
+  {{ if and (eq (env "DB_VIEWER" | default "false") "true") (eq (env "DATASTORE" | default "redis") "redis") }}
+  - name: redisinsight
+    namespace: default
+    chart: ./
+    version: ""
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "redisinsight.yaml"]
+      - events: ["postuninstall"]
+        showlogs: true
+        command: "kubectl"
+        args: ["delete", "-f", "redisinsight.yaml", "--ignore-not-found=true"]
+      - events: ["postuninstall"]
+        showlogs: true
+        command: "kubectl"
+        args: ["delete", "-f", "redisinsight-config-job.yaml", "--ignore-not-found=true"]
+    needs:
+      - redis
+  {{ end }}
+
+  # DynamoDB Admin - deployed when DB_VIEWER=true and DATASTORE=dynamodb
+  {{ if and (eq (env "DB_VIEWER" | default "false") "true") (eq (env "DATASTORE" | default "redis") "dynamodb") }}
+  - name: dynamodb-admin
+    namespace: default
+    chart: ./
+    version: ""
+    hooks:
+      - events: ["presync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "dynamodb-admin.yaml"]
+      - events: ["postuninstall"]
+        showlogs: true
+        command: "kubectl"
+        args: ["delete", "-f", "dynamodb-admin.yaml", "--ignore-not-found=true"]
+    needs:
+      - dynamodb-local
+  {{ end }}

@@ -1,0 +1,10 @@
+# No Persistent Datastore Configuration Overlay
+# This file is merged with ld-relay-values.yaml when no datastore is selected
+# LD Relay will run in-memory only mode
+
+relay:
+  environment:
+    # Explicitly disable all datastores
+    USE_REDIS: "false"
+    USE_DYNAMODB: "false"
+

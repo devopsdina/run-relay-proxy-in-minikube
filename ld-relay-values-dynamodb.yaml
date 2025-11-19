@@ -1,0 +1,18 @@
+# DynamoDB Datastore Configuration Overlay
+# This file is merged with ld-relay-values.yaml when DynamoDB is selected
+#
+# For LOCAL DynamoDB testing, we use fake AWS credentials
+# DynamoDB Local doesn't validate these, but LD Relay requires them to be set
+
+relay:
+  environment:
+    USE_REDIS: "false"
+    USE_DYNAMODB: "true"
+    DYNAMODB_TABLE: "ld-relay"
+    DYNAMODB_URL: "http://dynamodb-local:8000"
+    
+    # Fake AWS credentials for DynamoDB Local
+    AWS_ACCESS_KEY_ID: "fakeAccessKeyId"
+    AWS_SECRET_ACCESS_KEY: "fakeSecretAccessKey"
+    AWS_REGION: "us-east-1"
+

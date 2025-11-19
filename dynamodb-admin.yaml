@@ -1,0 +1,55 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: dynamodb-admin
+  labels:
+    app: dynamodb-admin
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: dynamodb-admin
+  template:
+    metadata:
+      labels:
+        app: dynamodb-admin
+    spec:
+      containers:
+        - name: dynamodb-admin
+          image: aaronshaf/dynamodb-admin:latest
+          ports:
+            - containerPort: 8001
+              name: http
+          env:
+            - name: DYNAMO_ENDPOINT
+              value: "http://dynamodb-local:8000"
+            - name: AWS_REGION
+              value: "us-east-1"
+            - name: AWS_ACCESS_KEY_ID
+              value: "fakeAccessKeyId"
+            - name: AWS_SECRET_ACCESS_KEY
+              value: "fakeSecretAccessKey"
+          resources:
+            limits:
+              cpu: 200m
+              memory: 256Mi
+            requests:
+              cpu: 100m
+              memory: 128Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: dynamodb-admin
+  labels:
+    app: dynamodb-admin
+spec:
+  selector:
+    app: dynamodb-admin
+  ports:
+    - protocol: TCP
+      port: 8001
+      targetPort: 8001
+      name: http
+  type: ClusterIP
+

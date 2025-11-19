@@ -1,0 +1,159 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: dynamodb-setup
+data:
+  verify-table.js: |
+    // DynamoDB Admin already has AWS SDK installed - use it!
+    const { DynamoDBClient, ListTablesCommand, DescribeTableCommand } = require('@aws-sdk/client-dynamodb');
+    
+    const TABLE_NAME = 'ld-relay';
+    const ENDPOINT = 'http://dynamodb-local:8000';
+    
+    // Create DynamoDB client
+    const dynamodb = new DynamoDBClient({
+      region: 'us-east-1',
+      endpoint: ENDPOINT,
+      credentials: {
+        accessKeyId: 'fakeAccessKeyId',
+        secretAccessKey: 'fakeSecretAccessKey'
+      }
+    });
+    
+    async function waitForDynamoDB() {
+      console.log('Waiting for DynamoDB Local to be ready...');
+      for (let i = 1; i <= 30; i++) {
+        try {
+          console.log(`Attempt ${i}/30: Checking if DynamoDB Local is ready...`);
+          const command = new ListTablesCommand({});
+          await dynamodb.send(command);
+          console.log('✓ DynamoDB Local is responding!');
+          return true;
+        } catch (err) {
+          if (i < 30) {
+            console.log(`  Error: ${err.message}, retrying...`);
+            await new Promise(r => setTimeout(r, 2000));
+          }
+        }
+      }
+      throw new Error('DynamoDB Local did not become ready in time');
+    }
+    
+    async function ensureTableExists() {
+      console.log(`\nChecking if table "${TABLE_NAME}" exists...`);
+      
+      try {
+        // Try to describe the table
+        const describeCommand = new DescribeTableCommand({ TableName: TABLE_NAME });
+        const describeResult = await dynamodb.send(describeCommand);
+        console.log(`✓ Table "${TABLE_NAME}" already exists with status: ${describeResult.Table.TableStatus}`);
+        return true;
+      } catch (err) {
+        if (err.name === 'ResourceNotFoundException') {
+          console.log(`Table "${TABLE_NAME}" does not exist, creating it...`);
+          
+          // Create the table with the correct schema for LD Relay
+          const { CreateTableCommand } = require('@aws-sdk/client-dynamodb');
+          const createCommand = new CreateTableCommand({
+            TableName: TABLE_NAME,
+            AttributeDefinitions: [
+              { AttributeName: 'namespace', AttributeType: 'S' },
+              { AttributeName: 'key', AttributeType: 'S' }
+            ],
+            KeySchema: [
+              { AttributeName: 'namespace', KeyType: 'HASH' },
+              { AttributeName: 'key', KeyType: 'RANGE' }
+            ],
+            BillingMode: 'PAY_PER_REQUEST'
+          });
+          
+          await dynamodb.send(createCommand);
+          console.log(`✓ Table "${TABLE_NAME}" created successfully!`);
+          return true;
+        } else {
+          throw err;
+        }
+      }
+    }
+    
+    async function waitForTableActive() {
+      console.log(`\nWaiting for table "${TABLE_NAME}" to become ACTIVE...`);
+      
+      for (let i = 1; i <= 30; i++) {
+        try {
+          const describeCommand = new DescribeTableCommand({ TableName: TABLE_NAME });
+          const describeResult = await dynamodb.send(describeCommand);
+          const status = describeResult.Table.TableStatus;
+          
+          console.log(`Check ${i}/30: Table status is ${status}`);
+          
+          if (status === 'ACTIVE') {
+            console.log(`✓ Table "${TABLE_NAME}" is ACTIVE and ready!`);
+            return true;
+          }
+        } catch (err) {
+          console.log(`Error: ${err.message}`);
+        }
+        
+        if (i < 30) {
+          await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      
+      throw new Error(`Table "${TABLE_NAME}" did not become ACTIVE in time.`);
+    }
+    
+    async function main() {
+      try {
+        await waitForDynamoDB();
+        await ensureTableExists();
+        await waitForTableActive();
+        console.log('\n✓ DynamoDB table is ready for LD Relay!');
+        process.exit(0);
+      } catch (err) {
+        console.error('\nERROR:', err.message);
+        process.exit(1);
+      }
+    }
+    
+    main();
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: dynamodb-config
+  labels:
+    app: dynamodb-config
+spec:
+  ttlSecondsAfterFinished: 100
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: dynamodb-config
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: configure
+          image: aaronshaf/dynamodb-admin:latest
+          command:
+            - /bin/sh
+            - -c
+            - |
+              node -e "$(cat /scripts/verify-table.js)"
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: dynamodb-setup
+            defaultMode: 0755
+

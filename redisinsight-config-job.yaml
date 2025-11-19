@@ -1,0 +1,178 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: redisinsight-setup
+data:
+  configure-redis.js: |
+    const http = require('http');
+    
+    const REDIS_PASSWORD = process.env.REDIS_PASSWORD;
+    const API_HOST = 'redisinsight.default.svc.cluster.local';
+    const API_PORT = 8001;
+    
+    function httpRequest(method, path, data = null) {
+      return new Promise((resolve, reject) => {
+        const options = {
+          hostname: API_HOST,
+          port: API_PORT,
+          path: path,
+          method: method,
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        };
+        
+        if (data) {
+          options.headers['Content-Length'] = Buffer.byteLength(data);
+        }
+        
+        const req = http.request(options, (res) => {
+          let body = '';
+          res.on('data', (chunk) => body += chunk);
+          res.on('end', () => {
+            resolve({ statusCode: res.statusCode, body: body, headers: res.headers });
+          });
+        });
+        
+        req.on('error', (err) => reject(err));
+        req.setTimeout(10000, () => {
+          req.destroy();
+          reject(new Error('Request timeout'));
+        });
+        
+        if (data) req.write(data);
+        req.end();
+      });
+    }
+    
+    async function waitForRedisInsight() {
+      console.log('Waiting for RedisInsight to be ready...');
+      for (let i = 1; i <= 60; i++) {
+        try {
+          console.log(`Attempt ${i}/60: Checking if RedisInsight is ready...`);
+          await httpRequest('GET', '/');
+          console.log('✓ RedisInsight is responding!');
+          return true;
+        } catch (err) {
+          if (i < 60) await new Promise(r => setTimeout(r, 2000));
+        }
+      }
+      throw new Error('RedisInsight did not become ready in time');
+    }
+    
+    async function setupAgreements() {
+      console.log('Setting up RedisInsight agreements (EULA, no encryption for containerized env)...');
+      try {
+        const data = JSON.stringify({
+          agreements: {
+            version: '1.0.0',
+            eula: true,
+            analytics: false,
+            notifications: false,
+            encryption: false
+          }
+        });
+        await httpRequest('PATCH', '/api/settings', data);
+        console.log('✓ Agreements set');
+      } catch (err) {
+        console.log('Warning: Could not set agreements:', err.message);
+      }
+    }
+    
+    async function addDatabase() {
+      console.log('Adding Redis database configuration...');
+      const data = JSON.stringify({
+        name: 'LD Relay Redis',
+        host: 'redis-master',
+        port: 6379,
+        password: REDIS_PASSWORD
+      });
+      
+      for (let i = 1; i <= 10; i++) {
+        try {
+          console.log(`API attempt ${i}/10: Calling http://${API_HOST}:${API_PORT}/api/databases`);
+          const response = await httpRequest('POST', '/api/databases', data);
+          
+          if (response.statusCode === 201 || response.statusCode === 200) {
+            console.log('✓ Redis database added successfully!');
+            console.log('Response:', response.body);
+            return true;
+          } else if (response.statusCode === 409) {
+            console.log('✓ Redis database already exists - configuration complete!');
+            return true;
+          } else if (response.statusCode === 500) {
+            console.log('API returned 500 error (not ready yet), will retry in 5 seconds...');
+            if (i < 10) await new Promise(r => setTimeout(r, 5000));
+          } else {
+            console.log(`Unexpected status code: ${response.statusCode}`);
+            console.log('Response:', response.body);
+          }
+        } catch (err) {
+          console.log(`Error: ${err.message}`);
+          if (i < 10) await new Promise(r => setTimeout(r, 5000));
+        }
+      }
+      throw new Error('Failed to add database after 10 attempts');
+    }
+    
+    async function main() {
+      try {
+        await waitForRedisInsight();
+        console.log('Waiting for RedisInsight API and persistence layer to be fully ready...');
+        console.log('This can take up to 60 seconds...');
+        await new Promise(r => setTimeout(r, 45000));
+        await setupAgreements();
+        await addDatabase();
+        console.log('✓ RedisInsight configuration complete!');
+        process.exit(0);
+      } catch (err) {
+        console.error('ERROR:', err.message);
+        process.exit(1);
+      }
+    }
+    
+    main();
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: redisinsight-config
+  labels:
+    app: redisinsight-config
+spec:
+  ttlSecondsAfterFinished: 100
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app: redisinsight-config
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: configure
+          image: redis/redisinsight:2.54.0
+          command:
+            - node
+            - /scripts/configure-redis.js
+          env:
+            - name: REDIS_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: redis
+                  key: redis-password
+          volumeMounts:
+            - name: scripts
+              mountPath: /scripts
+          resources:
+            limits:
+              cpu: 100m
+              memory: 128Mi
+            requests:
+              cpu: 50m
+              memory: 64Mi
+      volumes:
+        - name: scripts
+          configMap:
+            name: redisinsight-setup
+            defaultMode: 0755
+

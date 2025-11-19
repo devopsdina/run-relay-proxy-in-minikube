@@ -57,11 +57,10 @@ replica:
 
 # Metrics configuration (optional)
 metrics:
-  enabled: false
+  enabled: true
   # Enable for production monitoring
-  # enabled: true
-  # serviceMonitor:
-  #   enabled: true
+  serviceMonitor:
+    enabled: true
 
 # Network Policy (optional)
 # networkPolicy:
