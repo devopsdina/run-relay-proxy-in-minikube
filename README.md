@@ -133,7 +133,7 @@ helm repo add launchdarkly-ld-relay https://launchdarkly.github.io/ld-relay-helm
 helm repo update
 ```
 
-### Step 3: Configure Your Secrets (Local Testing)
+### Step 3: REQUIRED! Configure Your Secrets
 
 **Important:** Never commit your SDK keys to version control!
 
@@ -150,13 +150,13 @@ Edit `ld-relay-secrets.yaml`:
 relay:
   environment:
     LD_ENV_production: "sdk-your-actual-key-here"
-    REDIS_PASSWORD: "your-redis-password"
+    REDIS_PASSWORD: "your-redis-password" # MUST MATCH PASSWORD SET IN redis-secrets.yaml
 ```
 
 Edit `redis-secrets.yaml`:
 ```yaml
 auth:
-  password: "your-redis-password"  # Must match REDIS_PASSWORD above
+  password: "your-redis-password"  # MUST MATCH REDIS_PASSWORD SET IN ld-relay-secrets.yaml
 ```
 
 NOTE: For DynamoDB, we do not need a separate secrets file for local, fake values can be passed and are already set.

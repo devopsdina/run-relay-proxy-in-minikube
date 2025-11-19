@@ -45,10 +45,8 @@ kubectl cluster-info &>/dev/null || { echo -e "${RED}✗${NC} Kubernetes cluster
 [ -f "dynamodb-local.yaml" ] || echo -e "${YELLOW}⚠${NC} dynamodb-local.yaml not found (only needed for DynamoDB)"
 [ -f "ld-relay-secrets.yaml" ] || echo -e "${YELLOW}⚠${NC} ld-relay-secrets.yaml.example not found"
 [ -f "redis-secrets.yaml.example" ] || echo -e "${YELLOW}⚠${NC} redis-secrets.yaml.example not found"
-[ -f "dynamodb-secrets.yaml.example" ] || echo -e "${YELLOW}⚠${NC} dynamodb-secrets.yaml.example not found"
 [ -f "ld-relay-secrets.yaml" ] || echo -e "${YELLOW}⚠${NC} ld-relay-secrets.yaml not found (required - will check later)"
 [ -f "redis-secrets.yaml" ] || echo -e "${YELLOW}⚠${NC} redis-secrets.yaml not found (needed only if using Redis)"
-[ -f "dynamodb-secrets.yaml" ] || echo -e "${YELLOW}⚠${NC} dynamodb-secrets.yaml not found (will be created if using DynamoDB)"
 
 # Check Helm repositories
 helm repo list 2>/dev/null | grep -q launchdarkly-ld-relay || echo -e "${YELLOW}⚠${NC} launchdarkly-ld-relay repo not added (helmfile will add it)"
@@ -379,10 +377,8 @@ if [ "$DATASTORE" = "redis" ] && [ ! -f "redis-secrets.yaml" ]; then
     exit 1
 fi
 
-if [ "$DATASTORE" = "dynamodb" ] && [ ! -f "dynamodb-secrets.yaml" ]; then
-    echo "Creating dynamodb-secrets.yaml from example..."
-    cp dynamodb-secrets.yaml.example dynamodb-secrets.yaml
-fi
+# DynamoDB Local uses hardcoded fake credentials in ld-relay-values-dynamodb.yaml
+# No separate secrets file needed for local testing
 
 echo -e "${GREEN}✓${NC} All secrets files present"
 echo ""
@@ -733,6 +729,22 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
         echo ""
         gum style --bold "Starting port forwards..."
         echo ""
+        
+        # Kill any existing kubectl processes (including port-forwards) to avoid conflicts
+        echo "Stopping any existing port forwards..."
+        killall kubectl 2>/dev/null || true
+        sleep 1
+        
+        # Wait for services to be ready before port-forwarding
+        if [ "$DB_VIEWER" = "true" ]; then
+            if [ "$DATASTORE" = "redis" ]; then
+                echo "Waiting for RedisInsight to be ready..."
+                kubectl wait --for=condition=ready pod -l app=redisinsight --timeout=60s >/dev/null 2>&1 || echo -e "${YELLOW}⚠${NC} RedisInsight not ready yet, port-forward may fail"
+            elif [ "$DATASTORE" = "dynamodb" ]; then
+                echo "Waiting for DynamoDB Admin to be ready..."
+                kubectl wait --for=condition=ready pod -l app=dynamodb-admin --timeout=60s >/dev/null 2>&1 || echo -e "${YELLOW}⚠${NC} DynamoDB Admin not ready yet, port-forward may fail"
+            fi
+        fi
         
         # Start LD Relay port forwards
         kubectl port-forward svc/ld-relay 8030:8030 >/dev/null 2>&1 &

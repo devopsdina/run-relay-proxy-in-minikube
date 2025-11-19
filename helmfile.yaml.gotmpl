@@ -79,7 +79,6 @@ releases:
       - redis-secrets.yaml
       {{ else if eq (env "DATASTORE" | default "redis") "dynamodb" }}
       - ld-relay-values-dynamodb.yaml
-      - dynamodb-secrets.yaml
       {{ else }}
       - ld-relay-values-none.yaml
       {{ end }}
