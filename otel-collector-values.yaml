@@ -1,0 +1,65 @@
+# OpenTelemetry Collector Configuration for LD Relay v9
+# Only deployed when RELAY_VERSION=v9 and MONITORING=full
+#
+# LD Relay v9 removed its built-in Prometheus /metrics endpoint and pushes metrics, traces and logs
+# over OTLP instead. This collector receives that OTLP and re-exposes the metrics on :8889 for
+# Prometheus to scrape (ld-relay-otel job in prometheus-values.yaml). Traces and logs go to the
+# debug exporter until a tracing backend is added.
+
+mode: deployment
+fullnameOverride: otel-collector
+
+image:
+  repository: otel/opentelemetry-collector-contrib  # the prometheus exporter is a contrib component
+
+resources:
+  limits:
+    cpu: 200m
+    memory: 256Mi
+  requests:
+    cpu: 50m
+    memory: 128Mi
+
+ports:
+  # Disable the receivers LD Relay doesn't use
+  jaeger-compact:
+    enabled: false
+  jaeger-thrift:
+    enabled: false
+  jaeger-grpc:
+    enabled: false
+  zipkin:
+    enabled: false
+  # Prometheus scrape endpoint for the converted LD Relay metrics
+  prom-export:
+    enabled: true
+    containerPort: 8889
+    servicePort: 8889
+    protocol: TCP
+
+config:
+  receivers:
+    jaeger: null
+    zipkin: null
+    prometheus: null
+  exporters:
+    prometheus:
+      endpoint: ${env:MY_POD_IP}:8889
+      # Drop series that LD Relay stops reporting (e.g. after a pod is replaced)
+      metric_expiration: 2m
+    debug:
+      verbosity: basic
+  service:
+    pipelines:
+      metrics:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [prometheus]
+      traces:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [debug]
+      logs:
+        receivers: [otlp]
+        processors: [memory_limiter, batch]
+        exporters: [debug]

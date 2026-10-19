@@ -34,9 +34,9 @@ You must create this file and update it accordingly for the relay-proxy to start
 
 **The script will guide you through:**
 - ✅ Pre-flight checks for all dependencies
+- ✅ Relay version (v8 GA or the v9 release candidate, see [Relay Versions](#relay-versions-v8-and-v9))
 - ✅ Datastore selection (Redis, DynamoDB, or in-memory)
-- ✅ Relay mode (Proxy or Daemon mode)
-- ✅ Monitoring stack (optional Prometheus & Grafana)
+- ✅ Monitoring stack (optional Prometheus & Grafana, plus an OpenTelemetry Collector for v9)
 - ✅ Database viewer UI (optional RedisInsight or DynamoDB Admin)
 - ✅ Automatic configuration and deployment
 - ✅ Optional port forwarding for all services
@@ -46,6 +46,36 @@ The script will end with asking you if you'd like to forward the ports for the c
 ### 4. Access Your Services
 
 After deployment completes, you can run also `./check-status.sh` or any kubectl commands to see the status of pods and their URLs with port numbers.
+
+---
+
+## Relay Versions (v8 and v9)
+
+This repo can deploy either of two LD Relay versions. Pick one in `./setup.sh`, or set `RELAY_VERSION` when running helmfile directly:
+
+| | v8 (default) | v9 |
+|---|---|---|
+| Image | `launchdarkly/ld-relay:8.23.1` (GA) | `launchdarkly/ld-relay:9.0.0-rc.6` (release candidate) |
+| Values overlay | `ld-relay-values-v8.yaml` | `ld-relay-values-v9.yaml` |
+| Metrics | Prometheus `/metrics` on port 8031, scraped directly | OTLP push only, no `/metrics` endpoint. Relay sends metrics, traces and logs to an OpenTelemetry Collector, and Prometheus scrapes the collector on port 8889 |
+| Metric names | `launchdarkly_relay_connections`, `launchdarkly_relay_requests`, ... | `http_server_active_requests`, `launchdarkly_relay_requests_total`, `http_server_request_duration_seconds`, ... |
+| `/status` | Full status document | Same document, without the v8-only `sdkKeys`, `mobileKeys` and `autoConfigStatus` fields. Adds per-environment routes (`/status/<env>`) and `?expect=` health assertions |
+| Probes | `exec` probes that grep `/status` for `"status":"healthy"` | `httpGet /status?expect=status=healthy` (200 or 412) |
+| Alerts | `ld-relay-alerts.yaml` + `ld-relay-alerts-v8.yaml` | `ld-relay-alerts.yaml` + `ld-relay-alerts-v9.yaml` |
+
+```bash
+# v8 (default)
+DATASTORE=redis MONITORING=full helmfile sync
+
+# v9 release candidate
+RELAY_VERSION=v9 DATASTORE=redis MONITORING=full helmfile sync
+```
+
+To switch versions, tear down the current deployment first (`./setup.sh` offers this), or run `RELAY_VERSION=v9 helmfile destroy`. `RELAY_VERSION=v9` renders every release, including the collector, so it removes either version.
+
+Everything else is shared between the two versions: SDK keys, datastore overlays, cache and connection settings, the blackbox health check, and the pod restart alert.
+
+**About v9:** it's a release candidate and each RC has renamed metrics or attributes, so the image is pinned to an exact RC. rc.6 still serves payload filters and doesn't yet have every v8 feature (multiple concurrent SDK keys, the Redis connect and read timeouts). See [Known issues](#known-issues) and the [v9.0.0-rc.6 docs](https://github.com/launchdarkly/ld-relay/tree/v9.0.0-rc.6/docs).
 
 ---
 
@@ -279,14 +309,26 @@ To access the Prometheus web interface:
 
 ### LD Relay Metrics
 
-The LaunchDarkly Relay Proxy exposes Prometheus metrics on port 8031. To view them directly:
+Metrics only appear once Relay has served SDK traffic.
 
-**Common metrics to monitor:**
+**v8:** Relay serves Prometheus metrics on port 8031 (`kubectl port-forward svc/ld-relay 8031:8031`, then `curl http://localhost:8031/metrics`). Prometheus scrapes them with the `ld-relay` job.
 
-- `ld_connections` - Number of active connections to LaunchDarkly
-- `ld_requests_total` - Total number of HTTP requests received
-- `ld_stream_connections` - Number of active streaming connections
-- `ld_requests_duration_seconds` - Request duration histogram
+- `launchdarkly_relay_connections` - Number of SDK stream connections currently open to Relay
+- `launchdarkly_relay_newconnections` - Cumulative number of SDK stream connections
+- `launchdarkly_relay_requests` - Cumulative number of requests, by `route`, `method` and `env`
+- `launchdarkly_relay_request_duration` - Request duration histogram, in **microseconds**
+
+The v8 request metrics have no status-code label, so you can't calculate an error rate on v8.
+
+**v9:** Relay pushes OTLP to the OpenTelemetry Collector (`otel-collector-values.yaml`). The collector converts it to Prometheus metrics on port 8889 (`kubectl port-forward -n monitoring svc/otel-collector 8889:8889`), and Prometheus scrapes them with the `ld-relay-otel` job. Relay's own series keep `job="ld-relay"`.
+
+- `http_server_active_requests` - Requests in flight on every endpoint. Filter `launchdarkly_relay_endpoint_type="stream"` to get the v8 `connections` value
+- `launchdarkly_relay_requests_total` - Cumulative requests. Filter `launchdarkly_relay_endpoint_type="stream"` to get the v8 `newconnections` value
+- `http_server_request_duration_seconds` - Request duration histogram in seconds, with `http_response_status_code` (not recorded for streams)
+- `launchdarkly_relay_events_*` - Event pipeline: received, sent, failed, dropped, pending (these require `USE_EVENTS`, see [Known issues](#known-issues))
+- `target_info` - One series per Relay process (its OTel resource attributes)
+
+v9 renamed the attributes: `env` is now `launchdarkly_environment_name`, `route` is `http_route`, `method` is `http_request_method` and `userAgent` is `user_agent_original`. `platformCategory`, `sdkWrapper` and `relayId` are no longer reported on metrics. v9 traces and logs go to the collector's `debug` exporter (`kubectl logs -n monitoring deploy/otel-collector`).
 
 ### Health Check Monitoring with Blackbox Exporter
 
@@ -295,8 +337,23 @@ The monitoring stack includes Prometheus Blackbox Exporter, which actively probe
 **How it works:**
 - Blackbox Exporter makes HTTP requests to `http://ld-relay:8030/status` every 30 seconds
 - It validates the response contains `"status":"healthy"` in the JSON
-- The result is exposed as a Prometheus metric: `probe_success{service="ld-relay"}`
+- The result is exposed as a Prometheus metric: `probe_success{target="ld-relay-status"}`
 - Alerts trigger when the probe fails for more than 2 minutes
+
+`"healthy"` only means every environment is connected to LaunchDarkly. **It doesn't reflect the data store:** Relay still reports `healthy` while Redis or DynamoDB is down.
+
+**v9 per-environment probes** (`blackbox-exporter-values-v9.yaml.gotmpl`): v9 can check its own status and answer with an HTTP status code: 200 when every `expect` clause holds, 412 when one doesn't, 404 for an unknown environment, and 503 before Relay has initialized. For every `LD_ENV_<name>` key in `ld-relay-secrets.yaml`, the blackbox exporter probes:
+- `ld-relay-env-<name>`: `/status/<name>?expect=status=connected&expect=connectionStatus.state=VALID`
+- `ld-relay-datastore-<name>`: `/status/<name>?expect=dataStoreStatus.state=VALID` (only with Redis or DynamoDB)
+
+v8 ignores `?expect=` and always returns 200, so these probes are only deployed for v9.
+
+```bash
+curl -i 'http://localhost:8030/status?expect=status=healthy'   # 200, or 412 if degraded
+curl http://localhost:8030/status/<env>                        # one environment (v9)
+```
+
+Relay only marks the store `INTERRUPTED` after a store operation fails. With the infinite cache (`CACHE_TTL=-1s`), an idle Relay doesn't touch the store, so it can take a flag change or a Relay restart before an outage shows up.
 
 **View blackbox exporter targets:**
 ```bash
@@ -321,10 +378,12 @@ Redis metrics are automatically collected by the Prometheus exporter and availab
 
 In Grafana, you can create custom dashboards to visualize:
 
-- **Connection count over time**: Track `ld_connections` metric
-- **Request rate**: Query `rate(ld_requests_total[5m])`
-- **Error rate**: Track failed requests
-- **Response time percentiles**: Use `ld_requests_duration_seconds` histogram
+| Panel | v8 query | v9 query |
+|---|---|---|
+| SDK stream connections | `sum(launchdarkly_relay_connections)` | `sum(http_server_active_requests{launchdarkly_relay_endpoint_type="stream"})` |
+| Request rate | `sum(rate(launchdarkly_relay_requests[5m]))` | `sum(rate(launchdarkly_relay_requests_total[5m]))` |
+| Error rate | n/a (no status label) | `sum(rate(http_server_request_duration_seconds_count{http_response_status_code=~"5.."}[5m])) / sum(rate(http_server_request_duration_seconds_count[5m]))` |
+| p95 latency | `histogram_quantile(0.95, sum by (le) (rate(launchdarkly_relay_request_duration_bucket[5m])))` (µs) | `histogram_quantile(0.95, sum by (le) (rate(http_server_request_duration_seconds_bucket[5m])))` (s) |
 
 ### Checking Monitoring Stack Status
 
@@ -338,16 +397,27 @@ kubectl get pods -n monitoring
 
 ### Deploy Alert Rules
 
-Alert rules for LD Relay and Redis are defined in `ld-relay-alerts.yaml`.
+Alert rules are `PrometheusRule` resources that the helmfile applies after the monitoring stack syncs. It applies the shared rules, plus the selected version's rules and the datastore's rules, and deletes the other version's rules.
 
 **Pre-configured alerts include:**
 
-**Core LD Relay alerts (always active):**
-- `LDRelayUnhealthy` - Relay proxy /status endpoint health check failed (uses blackbox exporter)
-- `LDRelayMetricsDown` - Relay proxy metrics endpoint is not responding
-- `LDRelayNoConnections` - No active connections to LaunchDarkly
-- `LDRelayHighErrorRate` - Error rate above 5%
+**Shared (`ld-relay-alerts.yaml`):**
+- `LDRelayUnhealthy` - `/status` is not `healthy` (blackbox exporter)
 - `LDRelayFrequentRestarts` - Pod restarting frequently
+
+**v8 (`ld-relay-alerts-v8.yaml`):**
+- `LDRelayMetricsDown` - The `:8031/metrics` scrape is failing
+- `LDRelayNoSDKStreams` - No SDKs hold a stream connection (severity `info`, normal when idle)
+
+**v9 (`ld-relay-alerts-v9.yaml`):**
+- `LDRelayEnvironmentUnhealthy` - An environment is not connected with a VALID data source (per-environment probe)
+- `LDRelayDataStoreUnhealthy` - An environment's persistent store is not VALID (per-environment probe)
+- `LDRelayTelemetryMissing` - No Relay metrics are reaching Prometheus through the collector
+- `LDRelayOTelCollectorDown` - Prometheus can't scrape the collector
+- `LDRelayNoSDKStreams` - No SDKs hold a stream connection (severity `info`)
+- `LDRelayHighErrorRate` - More than 5% of requests returned 5xx
+- `LDRelayEventsFailed` / `LDRelayEventsDropped` - Analytics events failed or were dropped
+- `LDRelayMetricCardinalityOverflow` - Series merged into the `otel_metric_overflow` series (raise `OTEL_METRICS_CARDINALITY_LIMIT`)
 
 **Datastore-specific alerts (conditional based on DATASTORE selection):**
 - `RedisDown` - Redis is not responding (only when `DATASTORE=redis`)
@@ -404,10 +474,11 @@ alertmanager:
 The relay is configured with optimized settings for local development:
 
 ```yaml
-CACHE_TTL: "-1"  # Infinite cache (never expire)
+CACHE_TTL: "-1s"  # Infinite cache (never expire)
 IGNORE_CONNECTION_ERRORS: "true"  # Continue serving from cache if LaunchDarkly is unreachable
 INIT_TIMEOUT: "5s"  # Initial connection timeout
 LOG_LEVEL: "debug"  # Verbose logging for development
+MAX_CLIENT_REQUEST_BODY_SIZE: "5MiB"  # REPORT body limit; v9's default, set explicitly so v8 matches
 ```
 
 ### Datastore Configuration
@@ -430,7 +501,8 @@ Select `yes` for port forwarding during the setup.sh to automatically have all p
 | Service | Port | Purpose |
 |---------|------|---------|
 | LD Relay | 8030 | API/Status endpoint |
-| LD Relay | 8031 | Prometheus metrics |
+| LD Relay | 8031 | Prometheus metrics (v8 only) |
+| OpenTelemetry Collector | 4317 / 8889 | OTLP gRPC in / Prometheus metrics out (v9 only) |
 | Redis | 6379 | Redis server |
 | RedisInsight | 8001 | Web UI |
 | DynamoDB Local | 8000 | DynamoDB API |
@@ -455,6 +527,14 @@ kubectl get pods -l app.kubernetes.io/name=ld-relay
 ./setup.sh  # Will detect existing deployments and prompt for cleanup
 ```
 
+**`kubectl` version skew:** Docker Desktop puts its own `kubectl` at `/usr/local/bin/kubectl`, and it can be several minor versions behind the cluster minikube creates. Check with `which -a kubectl` and `kubectl version`. Putting `/opt/homebrew/bin` first in `PATH` uses the Homebrew `kubectl`.
+
+### Known issues
+
+- **v9.0.0-rc.6 doesn't repopulate Redis after a Redis outage at startup.** If Redis isn't accepting connections when Relay starts, Relay logs `Persistent store is available again` once Redis is back, but doesn't write its flag data. Redis stays empty until the next flag change, while `/status` reports the store `VALID`. v8 re-writes its data within a second. The helmfile avoids this by waiting for Redis to be Ready before installing Relay (`wait: true`).
+- **Analytics events are not forwarded.** `USE_EVENTS` defaults to `false` and isn't set here, so Relay answers SDK event posts with `503`, and the v9 event metrics and alerts stay empty. To forward events to LaunchDarkly, set `USE_EVENTS: "true"` in `ld-relay-values.yaml`.
+- **The v9 OTLP exporters fail for up to about a minute if Relay starts before the collector.** The helmfile installs the collector first. A Relay started earlier recovers on its own.
+
 ---
 
 ## Additional Resources
@@ -462,6 +542,8 @@ kubectl get pods -l app.kubernetes.io/name=ld-relay
 - [LaunchDarkly Relay Proxy Documentation](https://docs.launchdarkly.com/home/relay-proxy)
 - [Relay Proxy Helm Chart Repository](https://github.com/launchdarkly/ld-relay-helm)
 - [Relay Proxy Configuration Reference](https://docs.launchdarkly.com/home/relay-proxy/configuration)
+- [Relay Proxy v9.0.0-rc.6 docs](https://github.com/launchdarkly/ld-relay/tree/v9.0.0-rc.6/docs) (configuration, metrics, endpoints, tracing)
+- [OpenTelemetry Collector Helm Chart](https://github.com/open-telemetry/opentelemetry-helm-charts/tree/main/charts/opentelemetry-collector)
 - [Using Redis with Relay Proxy](https://docs.launchdarkly.com/home/relay-proxy/using#using-redis)
 - [Bitnami Redis Helm Chart](https://github.com/bitnami/charts/tree/main/bitnami/redis)
 - [kube-prometheus-stack Chart](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack)

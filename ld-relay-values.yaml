@@ -16,7 +16,7 @@ replicaCount: 1
 image:
   repository: launchdarkly/ld-relay
   pullPolicy: IfNotPresent
-  # tag: ""  # Defaults to chart appVersion
+  # tag is set per Relay version in ld-relay-values-v8.yaml / ld-relay-values-v9.yaml
 
 service:
   type: ClusterIP
@@ -25,10 +25,7 @@ service:
       targetPort: 8030
       protocol: TCP
       name: api
-    - port: 8031
-      targetPort: 8031
-      protocol: TCP
-      name: metrics
+    # v8 adds the 8031 Prometheus metrics port in ld-relay-values-v8.yaml
 
 resources:
   limits:
@@ -80,19 +77,6 @@ resources:
 
 # imagePullSecrets: []
 
-initContainers:
-  - name: wait-for-redis
-    command:
-      - 'sh'
-      - '-c'
-      - |
-        echo "Waiting for Redis to be ready..."
-        until nc -z redis-master 6379; do
-          echo "Redis is unavailable - sleeping"
-          sleep 2
-        done
-        echo "Redis is ready!"
-
 # nameOverride: ""
 # fullnameOverride: ""
 
@@ -126,9 +110,12 @@ relay:
     # Port configuration
     # PORT: "8030"
     
-    # Metrics and monitoring
-    USE_PROMETHEUS: "true"
-    PROMETHEUS_PORT: "8031"
+    # Maximum REPORT evaluation request body. v9 defaults to 5MiB and v8 has no limit,
+    # so set it explicitly to keep both versions consistent
+    MAX_CLIENT_REQUEST_BODY_SIZE: "5MiB"
+
+    # Metrics and monitoring are version-specific: see ld-relay-values-v8.yaml (Prometheus)
+    # and ld-relay-values-v9.yaml (OpenTelemetry)
 
   # Liveness and readiness probes
   # Override default httpGet probes to check connectionStatus JSON field

@@ -11,6 +11,7 @@ NORMAL=$(tput sgr0)
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Function to check if a command exists
@@ -38,10 +39,13 @@ kubectl cluster-info &>/dev/null || { echo -e "${RED}✗${NC} Kubernetes cluster
 # Check required files (only show missing)
 [ -f "helmfile.yaml.gotmpl" ] || { echo -e "${RED}✗${NC} helmfile.yaml.gotmpl not found"; PREFLIGHT_FAILED=1; }
 [ -f "ld-relay-values.yaml" ] || { echo -e "${RED}✗${NC} ld-relay-values.yaml not found"; PREFLIGHT_FAILED=1; }
+[ -f "ld-relay-values-v8.yaml" ] || { echo -e "${RED}✗${NC} ld-relay-values-v8.yaml not found"; PREFLIGHT_FAILED=1; }
+[ -f "ld-relay-values-v9.yaml" ] || { echo -e "${RED}✗${NC} ld-relay-values-v9.yaml not found"; PREFLIGHT_FAILED=1; }
 [ -f "redis-values.yaml" ] || { echo -e "${RED}✗${NC} redis-values.yaml not found"; PREFLIGHT_FAILED=1; }
 
 # Optional files (warnings)
 [ -f "prometheus-values.yaml" ] || echo -e "${YELLOW}⚠${NC} prometheus-values.yaml not found (only needed for monitoring)"
+[ -f "otel-collector-values.yaml" ] || echo -e "${YELLOW}⚠${NC} otel-collector-values.yaml not found (only needed for v9 monitoring)"
 [ -f "dynamodb-local.yaml" ] || echo -e "${YELLOW}⚠${NC} dynamodb-local.yaml not found (only needed for DynamoDB)"
 [ -f "ld-relay-secrets.yaml" ] || echo -e "${YELLOW}⚠${NC} ld-relay-secrets.yaml.example not found"
 [ -f "redis-secrets.yaml.example" ] || echo -e "${YELLOW}⚠${NC} redis-secrets.yaml.example not found"
@@ -52,11 +56,17 @@ kubectl cluster-info &>/dev/null || { echo -e "${RED}✗${NC} Kubernetes cluster
 helm repo list 2>/dev/null | grep -q launchdarkly-ld-relay || echo -e "${YELLOW}⚠${NC} launchdarkly-ld-relay repo not added (helmfile will add it)"
 helm repo list 2>/dev/null | grep -q bitnami || echo -e "${YELLOW}⚠${NC} bitnami repo not added (helmfile will add it)"
 helm repo list 2>/dev/null | grep -q prometheus-community || echo -e "${YELLOW}⚠${NC} prometheus-community repo not added (helmfile will add it)"
+helm repo list 2>/dev/null | grep -q open-telemetry || echo -e "${YELLOW}⚠${NC} open-telemetry repo not added (helmfile will add it)"
 
 # Check for existing deployments
 EXISTING_DEPLOYMENTS=()
 EXISTING_FOUND=0
-kubectl get deployment ld-relay &>/dev/null && { echo -e "${YELLOW}⚠${NC} LD Relay deployment already exists"; EXISTING_DEPLOYMENTS+=("ld-relay"); EXISTING_FOUND=1; }
+if kubectl get deployment ld-relay &>/dev/null; then
+    EXISTING_RELAY_IMAGE=$(kubectl get deployment ld-relay -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+    echo -e "${YELLOW}⚠${NC} LD Relay deployment already exists (${EXISTING_RELAY_IMAGE##*:})"
+    EXISTING_DEPLOYMENTS+=("ld-relay (${EXISTING_RELAY_IMAGE##*:})")
+    EXISTING_FOUND=1
+fi
 { kubectl get deployment redis-master &>/dev/null || kubectl get statefulset redis-master &>/dev/null; } && { echo -e "${YELLOW}⚠${NC} Redis deployment already exists"; EXISTING_DEPLOYMENTS+=("redis"); EXISTING_FOUND=1; }
 kubectl get deployment dynamodb-local &>/dev/null && { echo -e "${YELLOW}⚠${NC} DynamoDB Local already exists"; EXISTING_DEPLOYMENTS+=("dynamodb-local"); EXISTING_FOUND=1; }
 kubectl get deployment redisinsight &>/dev/null && { echo -e "${YELLOW}⚠${NC} RedisInsight already exists"; EXISTING_DEPLOYMENTS+=("redisinsight"); EXISTING_FOUND=1; }
@@ -121,7 +131,7 @@ if [ $EXISTING_FOUND -eq 1 ]; then
         echo "Setup cancelled."
         echo ""
         echo "To manually clean up, run:"
-        echo "  helmfile destroy"
+        echo "  RELAY_VERSION=v9 helmfile destroy"
         echo "  kubectl delete -f dynamodb-local.yaml --ignore-not-found=true"
         echo "  kubectl delete -f redisinsight.yaml --ignore-not-found=true"
         echo "  kubectl delete -f dynamodb-admin.yaml --ignore-not-found=true"
@@ -133,10 +143,11 @@ if [ $EXISTING_FOUND -eq 1 ]; then
     gum style --bold "Cleaning up existing deployments..."
     echo ""
     
-    # Run helmfile destroy
+    # Run helmfile destroy. RELAY_VERSION=v9 renders the superset of releases (it adds the
+    # OpenTelemetry Collector), so it removes a v8 or a v9 deployment
     echo "Removing Helm releases..."
     if gum spin --spinner dot --title "Running helmfile destroy..." -- \
-        helmfile destroy 2>&1 | tee /tmp/helmfile-destroy.log; then
+        env RELAY_VERSION=v9 helmfile destroy 2>&1 | tee /tmp/helmfile-destroy.log; then
         echo -e "${GREEN}✓${NC} Helm releases removed"
     else
         echo -e "${YELLOW}⚠${NC} Helmfile destroy encountered issues (this is sometimes normal)"
@@ -271,6 +282,14 @@ gum style \
 
 echo ""
 
+# Prompt for Relay version selection
+gum style --bold "Select LD Relay Version:"
+RELAY_VERSION_CHOICE=$(gum choose \
+    "v8 - 8.23.1 (GA, recommended)" \
+    "v9 - 9.0.0-rc.6 (release candidate)")
+
+echo ""
+
 # Prompt for datastore selection
 gum style --bold "Select Persistent Datastore:"
 DATASTORE_CHOICE=$(gum choose \
@@ -289,6 +308,17 @@ MONITORING_CHOICE=$(gum choose \
 echo ""
 
 # Map choices to environment variables
+case "$RELAY_VERSION_CHOICE" in
+    "v8 - 8.23.1 (GA, recommended)")
+        export RELAY_VERSION="v8"
+        RELAY_VERSION_DISPLAY="v8 (8.23.1)"
+        ;;
+    "v9 - 9.0.0-rc.6 (release candidate)")
+        export RELAY_VERSION="v9"
+        RELAY_VERSION_DISPLAY="v9 (9.0.0-rc.6, release candidate)"
+        ;;
+esac
+
 case "$DATASTORE_CHOICE" in
     "Redis (local)")
         export DATASTORE="redis"
@@ -312,6 +342,8 @@ case "$MONITORING_CHOICE" in
     "Prometheus & Grafana (Full Monitoring)")
         export MONITORING="full"
         MONITORING_DISPLAY="Prometheus & Grafana"
+        # v9 has no Prometheus endpoint; its OTLP metrics go through an OpenTelemetry Collector
+        [ "$RELAY_VERSION" = "v9" ] && MONITORING_DISPLAY="Prometheus & Grafana + OpenTelemetry Collector"
         ;;
     "No Monitoring")
         export MONITORING="none"
@@ -347,7 +379,7 @@ gum style \
     "Configuration Summary" \
     "" \
     "Components to Deploy:" \
-    "  • LaunchDarkly Relay Proxy (always included)" \
+    "  • LaunchDarkly Relay Proxy (always included): $RELAY_VERSION_DISPLAY" \
     "  • Datastore: $DATASTORE_DISPLAY" \
     "  • Monitoring: $MONITORING_DISPLAY" \
     "  • DB Viewer: $DB_VIEWER_DISPLAY"
@@ -411,7 +443,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
     
     # Check LD Relay status
     echo "${BOLD}LD Relay:${NORMAL}"
-    if kubectl get pods -l app.kubernetes.io/name=ld-relay &>/dev/null; then
+    if kubectl get pods -l app.kubernetes.io/name=ld-relay --no-headers 2>/dev/null | grep -q .; then
         kubectl get pods -l app.kubernetes.io/name=ld-relay
         RELAY_READY=$(kubectl get pods -l app.kubernetes.io/name=ld-relay -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
         if [ "$RELAY_READY" = "True" ]; then
@@ -427,7 +459,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
     # Check datastore status
     if [ "$DATASTORE" = "redis" ]; then
         echo "${BOLD}Redis:${NORMAL}"
-        if kubectl get pods -l app.kubernetes.io/name=redis &>/dev/null; then
+        if kubectl get pods -l app.kubernetes.io/name=redis --no-headers 2>/dev/null | grep -q .; then
             kubectl get pods -l app.kubernetes.io/name=redis
             echo -e "  ${GREEN}✓${NC} Redis is deployed"
         else
@@ -436,7 +468,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
         echo ""
     elif [ "$DATASTORE" = "dynamodb" ]; then
         echo "${BOLD}DynamoDB Local:${NORMAL}"
-        if kubectl get pods -l app=dynamodb-local &>/dev/null; then
+        if kubectl get pods -l app=dynamodb-local --no-headers 2>/dev/null | grep -q .; then
             kubectl get pods -l app=dynamodb-local
             echo -e "  ${GREEN}✓${NC} DynamoDB Local is deployed"
         else
@@ -448,11 +480,18 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
     # Check monitoring status
     if [ "$MONITORING" = "full" ]; then
         echo "${BOLD}Monitoring Stack:${NORMAL}"
-        if kubectl get pods -n monitoring &>/dev/null 2>&1; then
+        if kubectl get pods -n monitoring --no-headers 2>/dev/null | grep -q .; then
             kubectl get pods -n monitoring | head -6
             echo -e "  ${GREEN}✓${NC} Monitoring stack is deployed"
         else
             echo -e "  ${YELLOW}⚠${NC} Monitoring stack is starting..."
+        fi
+        if [ "$RELAY_VERSION" = "v9" ]; then
+            if kubectl get deployment otel-collector -n monitoring &>/dev/null; then
+                echo -e "  ${GREEN}✓${NC} OpenTelemetry Collector is deployed (receives LD Relay v9 OTLP)"
+            else
+                echo -e "  ${RED}✗${NC} OpenTelemetry Collector not found"
+            fi
         fi
         echo ""
     fi
@@ -461,7 +500,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
     if [ "$DB_VIEWER" = "true" ]; then
         if [ "$DATASTORE" = "redis" ]; then
             echo "${BOLD}RedisInsight:${NORMAL}"
-            if kubectl get pods -l app=redisinsight &>/dev/null; then
+            if kubectl get pods -l app=redisinsight --no-headers 2>/dev/null | grep -q .; then
                 kubectl get pods -l app=redisinsight
                 echo -e "  ${GREEN}✓${NC} RedisInsight is deployed"
                 
@@ -479,7 +518,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
             fi
         else
             echo "${BOLD}DynamoDB Admin:${NORMAL}"
-            if kubectl get pods -l app=dynamodb-admin &>/dev/null; then
+            if kubectl get pods -l app=dynamodb-admin --no-headers 2>/dev/null | grep -q .; then
                 kubectl get pods -l app=dynamodb-admin
                 echo -e "  ${GREEN}✓${NC} DynamoDB Admin is deployed"
                 
@@ -513,10 +552,27 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
     echo "  curl http://localhost:8030/status"
     echo ""
     
-    echo "${BOLD}LD Relay Metrics:${NORMAL}"
-    echo "  kubectl port-forward svc/ld-relay 8031:8031"
-    echo "  curl http://localhost:8031/metrics"
-    echo ""
+    if [ "$RELAY_VERSION" = "v9" ]; then
+        # v9 has per-environment status routes and ?expect= health assertions
+        ENV_NAMES=$(grep -E '^[[:space:]]*LD_ENV_[A-Za-z0-9_]+[[:space:]]*:' ld-relay-secrets.yaml | sed -E 's/^[[:space:]]*LD_ENV_([A-Za-z0-9_]+).*/\1/')
+        for ENV_NAME in $ENV_NAMES; do
+            echo "  curl http://localhost:8030/status/$ENV_NAME"
+        done
+        echo "  curl -i 'http://localhost:8030/status?expect=status=healthy'  # 200 healthy, 412 not"
+        echo ""
+
+        if [ "$MONITORING" = "full" ]; then
+            echo "${BOLD}LD Relay Metrics (v9 pushes OTLP to the OpenTelemetry Collector):${NORMAL}"
+            echo "  kubectl port-forward -n monitoring svc/otel-collector 8889:8889"
+            echo "  curl http://localhost:8889/metrics"
+            echo ""
+        fi
+    else
+        echo "${BOLD}LD Relay Metrics:${NORMAL}"
+        echo "  kubectl port-forward svc/ld-relay 8031:8031"
+        echo "  curl http://localhost:8031/metrics"
+        echo ""
+    fi
     
     echo "${BOLD}View LD Relay logs:${NORMAL}"
     echo "  kubectl logs -l app.kubernetes.io/name=ld-relay --follow"
@@ -621,7 +677,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
         WAIT_COUNT=0
         POD_RUNNING=0
         while [ $WAIT_COUNT -lt 60 ]; do
-            if kubectl get pods -l app=redisinsight-config &>/dev/null 2>&1; then
+            if kubectl get pods -l app=redisinsight-config --no-headers 2>/dev/null | grep -q .; then
                 POD_STATUS=$(kubectl get pods -l app=redisinsight-config -o jsonpath='{.items[0].status.phase}' 2>/dev/null || echo "Unknown")
                 if [ "$POD_STATUS" = "Running" ]; then
                     POD_RUNNING=1
@@ -693,7 +749,7 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
         else
             echo -e "${RED}✗${NC} Auto-configuration job pod did not start running in time"
             echo ""
-            if kubectl get pods -l app=redisinsight-config &>/dev/null 2>&1; then
+            if kubectl get pods -l app=redisinsight-config --no-headers 2>/dev/null | grep -q .; then
                 echo "Pod logs:"
                 kubectl logs -l app=redisinsight-config 2>&1 | while IFS= read -r line; do
                     echo "  $line"
@@ -751,9 +807,17 @@ if gum spin --spinner dot --title "Running helmfile sync..." -- \
         sleep 1
         echo -e "${GREEN}✓${NC} LD Relay Status: http://localhost:8030/status"
         
-        kubectl port-forward svc/ld-relay 8031:8031 >/dev/null 2>&1 &
-        sleep 1
-        echo -e "${GREEN}✓${NC} LD Relay Metrics: http://localhost:8031/metrics"
+        if [ "$RELAY_VERSION" = "v9" ]; then
+            if [ "$MONITORING" = "full" ]; then
+                kubectl port-forward -n monitoring svc/otel-collector 8889:8889 >/dev/null 2>&1 &
+                sleep 1
+                echo -e "${GREEN}✓${NC} LD Relay Metrics (via OTel Collector): http://localhost:8889/metrics"
+            fi
+        else
+            kubectl port-forward svc/ld-relay 8031:8031 >/dev/null 2>&1 &
+            sleep 1
+            echo -e "${GREEN}✓${NC} LD Relay Metrics: http://localhost:8031/metrics"
+        fi
         
         # Start DB viewer port forward if enabled
         if [ "$DB_VIEWER" = "true" ]; then
