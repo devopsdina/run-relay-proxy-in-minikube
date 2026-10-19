@@ -1,0 +1,57 @@
+# Prometheus Blackbox Exporter - LD Relay v9 overlay
+# Merged over blackbox-exporter-values.yaml when RELAY_VERSION=v9
+#
+# v9 adds per-environment status routes (/status/<env>) and ?expect= assertions that make Relay
+# answer with an HTTP status code: 200 when every clause holds, 412 when one does not, 404 for an
+# unknown environment and 503 before Relay has initialized. v8 ignores ?expect= and always returns
+# 200, so these probes are only valid against v9.
+#
+# One environment target and one data store target are generated per LD_ENV_<name> key in
+# ld-relay-secrets.yaml (the top-level "healthy" status ignores data store health).
+{{- $secrets := readFile "ld-relay-secrets.yaml" }}
+{{- $envs := list }}
+{{- range regexFindAll "(?m)^[ \\t]*LD_ENV_[A-Za-z0-9_]+[ \\t]*:" $secrets -1 }}
+{{- $envs = append $envs (. | trim | trimPrefix "LD_ENV_" | trimSuffix ":" | trim) }}
+{{- end }}
+{{- $relay := "http://ld-relay.default.svc.cluster.local:8030" }}
+
+config:
+  modules:
+    http_ld_status:
+      prober: http
+      timeout: 5s
+      http:
+        valid_status_codes: [200]
+        method: GET
+        fail_if_body_not_matches_regexp:
+          - '"status":"healthy"'
+        preferred_ip_protocol: "ip4"
+    # Relay evaluates the ?expect= clauses itself; only a 200 means they all held
+    http_ld_expect:
+      prober: http
+      timeout: 5s
+      http:
+        valid_status_codes: [200]
+        method: GET
+        preferred_ip_protocol: "ip4"
+
+serviceMonitor:
+  # Lists replace rather than merge, so the shared ld-relay-status target is repeated here
+  targets:
+    - name: ld-relay-status
+      url: {{ $relay }}/status
+      module: http_ld_status
+      metricRelabelings:
+        - sourceLabels: [service]
+          targetLabel: service
+          replacement: ld-relay
+{{- range $envs }}
+    - name: ld-relay-env-{{ . | lower }}
+      url: {{ $relay }}/status/{{ . }}?expect=status=connected&expect=connectionStatus.state=VALID
+      module: http_ld_expect
+{{- if ne (env "DATASTORE" | default "redis") "none" }}
+    - name: ld-relay-datastore-{{ . | lower }}
+      url: {{ $relay }}/status/{{ . }}?expect=dataStoreStatus.state=VALID
+      module: http_ld_expect
+{{- end }}
+{{- end }}

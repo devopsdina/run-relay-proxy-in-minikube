@@ -1,0 +1,24 @@
+# LD Relay v8 Overlay
+# This file is merged with ld-relay-values.yaml when RELAY_VERSION=v8 (the default)
+
+image:
+  tag: "8.23.1"  # Pinned; the chart appVersion (8.22.0) lags the latest Relay release
+
+service:
+  # Lists replace rather than merge, so the api port is repeated here
+  ports:
+    - port: 8030
+      targetPort: 8030
+      protocol: TCP
+      name: api
+    - port: 8031
+      targetPort: 8031
+      protocol: TCP
+      name: metrics
+
+relay:
+  environment:
+    # v8 serves Prometheus metrics on /metrics, scraped by the ld-relay job in prometheus-values.yaml.
+    # Series are prefixed launchdarkly_relay_ (e.g. launchdarkly_relay_connections)
+    USE_PROMETHEUS: "true"
+    PROMETHEUS_PORT: "8031"

@@ -36,7 +36,7 @@ section_header() {
 
 # Check LD Relay
 section_header "LD Relay Status"
-if kubectl get pods -l app.kubernetes.io/name=ld-relay &>/dev/null; then
+if kubectl get pods -l app.kubernetes.io/name=ld-relay --no-headers 2>/dev/null | grep -q .; then
     kubectl get pods -l app.kubernetes.io/name=ld-relay
     
     # Check if relay is ready
@@ -47,13 +47,20 @@ if kubectl get pods -l app.kubernetes.io/name=ld-relay &>/dev/null; then
     else
         echo -e "${YELLOW}⚠${NC} LD Relay is not ready yet"
     fi
+
+    RELAY_IMAGE=$(kubectl get deployment ld-relay -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)
+    RELAY_TAG=${RELAY_IMAGE##*:}
+    case "$RELAY_TAG" in
+        9.*) RELAY_MAJOR="v9"; echo "Version: $RELAY_TAG (v9 release candidate)" ;;
+        *)   RELAY_MAJOR="v8"; echo "Version: $RELAY_TAG (v8)" ;;
+    esac
 else
     echo -e "${RED}✗${NC} LD Relay not found"
 fi
 
 # Check Redis
 section_header "Redis Status"
-if kubectl get pods -l app.kubernetes.io/name=redis &>/dev/null; then
+if kubectl get pods -l app.kubernetes.io/name=redis --no-headers 2>/dev/null | grep -q .; then
     kubectl get pods -l app.kubernetes.io/name=redis
     echo -e "${GREEN}✓${NC} Redis is deployed"
 else
@@ -62,7 +69,7 @@ fi
 
 # Check DynamoDB Local
 section_header "DynamoDB Local Status"
-if kubectl get pods -l app=dynamodb-local &>/dev/null; then
+if kubectl get pods -l app=dynamodb-local --no-headers 2>/dev/null | grep -q .; then
     kubectl get pods -l app=dynamodb-local
     echo -e "${GREEN}✓${NC} DynamoDB Local is deployed"
 else
@@ -71,7 +78,7 @@ fi
 
 # Check RedisInsight
 section_header "RedisInsight Status"
-if kubectl get pods -l app=redisinsight &>/dev/null; then
+if kubectl get pods -l app=redisinsight --no-headers 2>/dev/null | grep -q .; then
     kubectl get pods -l app=redisinsight
     echo -e "${GREEN}✓${NC} RedisInsight is deployed"
     
@@ -90,7 +97,7 @@ fi
 
 # Check DynamoDB Admin
 section_header "DynamoDB Admin Status"
-if kubectl get pods -l app=dynamodb-admin &>/dev/null; then
+if kubectl get pods -l app=dynamodb-admin --no-headers 2>/dev/null | grep -q .; then
     kubectl get pods -l app=dynamodb-admin
     echo -e "${GREEN}✓${NC} DynamoDB Admin is deployed"
 else
@@ -99,7 +106,7 @@ fi
 
 # Check Monitoring Stack
 section_header "Monitoring Stack Status"
-if kubectl get pods -n monitoring &>/dev/null 2>&1; then
+if kubectl get pods -n monitoring --no-headers 2>/dev/null | grep -q .; then
     kubectl get pods -n monitoring
     echo -e "${GREEN}✓${NC} Monitoring stack is deployed"
     
@@ -113,6 +120,16 @@ if kubectl get pods -n monitoring &>/dev/null 2>&1; then
     PROM_READY=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=prometheus -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
     if [ "$PROM_READY" = "True" ]; then
         echo -e "${GREEN}✓${NC} Prometheus is ready"
+    fi
+
+    # Check OpenTelemetry Collector (LD Relay v9 only)
+    if [ "$RELAY_MAJOR" = "v9" ]; then
+        COLLECTOR_READY=$(kubectl get pods -n monitoring -l app.kubernetes.io/name=opentelemetry-collector -o jsonpath='{.items[0].status.conditions[?(@.type=="Ready")].status}' 2>/dev/null || echo "False")
+        if [ "$COLLECTOR_READY" = "True" ]; then
+            echo -e "${GREEN}✓${NC} OpenTelemetry Collector is ready"
+        else
+            echo -e "${YELLOW}⚠${NC} OpenTelemetry Collector is not ready (LD Relay v9 metrics will be missing)"
+        fi
     fi
 else
     echo "Monitoring stack not deployed"
@@ -134,9 +151,24 @@ section_header "Quick Access Commands"
 echo "LD Relay Status:"
 echo "  kubectl port-forward svc/ld-relay 8030:8030"
 echo "  curl http://localhost:8030/status"
+if [ "$RELAY_MAJOR" = "v9" ]; then
+    echo "  curl http://localhost:8030/status/<env>                      # per-environment status"
+    echo "  curl -i 'http://localhost:8030/status?expect=status=healthy'  # 200 healthy, 412 not"
+fi
 echo ""
 
-if kubectl get pods -l app=redisinsight &>/dev/null; then
+if [ "$RELAY_MAJOR" = "v9" ]; then
+    echo "LD Relay Metrics (v9 pushes OTLP to the OpenTelemetry Collector):"
+    echo "  kubectl port-forward -n monitoring svc/otel-collector 8889:8889"
+    echo "  curl http://localhost:8889/metrics"
+elif [ -n "$RELAY_MAJOR" ]; then
+    echo "LD Relay Metrics:"
+    echo "  kubectl port-forward svc/ld-relay 8031:8031"
+    echo "  curl http://localhost:8031/metrics"
+fi
+echo ""
+
+if kubectl get pods -l app=redisinsight --no-headers 2>/dev/null | grep -q .; then
     echo "RedisInsight:"
     echo "  kubectl port-forward svc/redisinsight 8001:8001"
     echo "  Open: http://localhost:8001"
@@ -144,14 +176,14 @@ if kubectl get pods -l app=redisinsight &>/dev/null; then
     echo ""
 fi
 
-if kubectl get pods -l app=dynamodb-admin &>/dev/null; then
+if kubectl get pods -l app=dynamodb-admin --no-headers 2>/dev/null | grep -q .; then
     echo "DynamoDB Admin:"
     echo "  kubectl port-forward svc/dynamodb-admin 8001:8001"
     echo "  Open: http://localhost:8001"
     echo ""
 fi
 
-if kubectl get pods -n monitoring &>/dev/null 2>&1; then
+if kubectl get pods -n monitoring --no-headers 2>/dev/null | grep -q .; then
     echo "Grafana:"
     echo "  kubectl port-forward -n monitoring svc/kube-prometheus-stack-grafana 3000:80"
     echo "  Open: http://localhost:3000 (admin/admin)"

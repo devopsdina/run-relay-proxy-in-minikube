@@ -1,0 +1,38 @@
+# LD Relay v8 alerts - applied when RELAY_VERSION=v8
+# v8 serves Prometheus metrics on :8031, prefixed launchdarkly_relay_.
+# Its request metrics have no status-code label, so an error-rate alert is not possible on v8.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ld-relay-alerts-v8
+  namespace: default
+  labels:
+    app: ld-relay
+    prometheus: kube-prometheus-stack
+spec:
+  groups:
+    - name: ld-relay-v8
+      interval: 30s
+      rules:
+        # Alert when LD Relay metrics endpoint is down (fallback)
+        - alert: LDRelayMetricsDown
+          expr: up{job="ld-relay"} == 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay Metrics Endpoint Down"
+            description: "LD Relay metrics endpoint has been down for more than 2 minutes."
+
+        # Alert when no SDKs hold a stream connection to LD Relay.
+        # launchdarkly_relay_connections counts SDK -> Relay streams, not Relay -> LaunchDarkly;
+        # upstream health is covered by LDRelayUnhealthy. Severity is info because an idle
+        # local environment legitimately has no SDKs connected.
+        - alert: LDRelayNoSDKStreams
+          expr: sum(launchdarkly_relay_connections) < 1
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: "No SDK stream connections to LD Relay"
+            description: "No SDKs have held a stream connection to LD Relay for 5 minutes."

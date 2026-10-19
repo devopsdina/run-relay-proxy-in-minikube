@@ -1,0 +1,37 @@
+# LD Relay v9 Overlay
+# This file is merged with ld-relay-values.yaml when RELAY_VERSION=v9
+#
+# v9 is a release candidate. Its built-in Prometheus exporter is gone: metrics, traces and logs are
+# pushed over OTLP to the OpenTelemetry Collector (otel-collector-values.yaml), which Prometheus scrapes.
+# See: https://github.com/launchdarkly/ld-relay/blob/v9.0.0-rc.6/docs/metrics.md
+
+image:
+  tag: "9.0.0-rc.6"  # Pin the exact RC; each RC has renamed metrics or attributes
+
+relay:
+  environment:
+    # OpenTelemetry export. helmfile sets USE_OTLP=false when MONITORING=none (no collector)
+    USE_OTLP: "true"
+    OTEL_EXPORTER_OTLP_PROTOCOL: "grpc"
+    OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector.monitoring.svc.cluster.local:4317"
+    OTEL_SERVICE_NAME: "ld-relay"
+    OTEL_METRIC_EXPORT_INTERVAL: "15000"  # ms; default is 60000, shortened for local dev
+    # OTEL_METRICS_CARDINALITY_LIMIT: "2000"  # default; overflow shows up as otel_metric_overflow="true"
+
+    # Limit concurrent SDK initialization deliveries (thundering-herd protection). Off by default
+    # INIT_MAX_CONCURRENT: "50"
+    # INIT_MAX_QUEUED: "100"
+
+  # v9 evaluates ?expect= itself: 200 when status=healthy, 412 when not, so the probes no longer
+  # need a shell to parse the body. Timings are inherited from ld-relay-values.yaml.
+  # (v8 ignores ?expect= and always returns 200, so this must stay v9-only.)
+  livenessProbe:
+    exec: null
+    httpGet:
+      path: /status?expect=status=healthy
+      port: api
+  readinessProbe:
+    exec: null
+    httpGet:
+      path: /status?expect=status=healthy
+      port: api

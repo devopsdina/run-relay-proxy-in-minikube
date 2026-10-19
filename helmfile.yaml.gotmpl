@@ -4,14 +4,20 @@
 #   DATASTORE: redis|dynamodb|none (default: redis)
 #   MONITORING: full|none (default: full)
 #   DB_VIEWER: true|false (default: false) - Deploy database management UI
+#   RELAY_VERSION: v8|v9 (default: v8) - v8 = 8.23.1 (GA), v9 = 9.0.0-rc.6 (release candidate)
 #
 # Usage with interactive setup:
 #   ./setup.sh
 #
 # Usage with direct helmfile:
 #   DATASTORE=redis MONITORING=full DB_VIEWER=true helmfile sync
+#   RELAY_VERSION=v9 DATASTORE=redis helmfile sync
 #
 # For more info: https://github.com/helmfile/helmfile
+
+{{ if not (has (env "RELAY_VERSION" | default "v8") (list "v8" "v9")) }}
+{{ fail "RELAY_VERSION must be v8 or v9" }}
+{{ end }}
 
 ---
 
@@ -22,6 +28,8 @@ repositories:
     url: https://charts.bitnami.com/bitnami
   - name: prometheus-community
     url: https://prometheus-community.github.io/helm-charts
+  - name: open-telemetry
+    url: https://open-telemetry.github.io/opentelemetry-helm-charts
 
 releases:
   # Redis - only deployed when DATASTORE=redis
@@ -29,10 +37,24 @@ releases:
   - name: redis
     namespace: default
     chart: bitnami/redis
-    version: ""
+    version: "28.3.1"
+    # Wait for Redis to be Ready before ld-relay (which needs it) is installed. v9.0.0-rc.6 does not
+    # write its data to Redis when Redis becomes available after Relay has started (v8 does)
+    wait: true
+    timeout: 300
     values:
       - redis-values.yaml
       - redis-secrets.yaml
+    # The Redis ServiceMonitor needs the Prometheus Operator CRDs, so only create it
+    # when the monitoring stack is deployed, and install that stack first
+    {{ if eq (env "MONITORING" | default "full") "full" }}
+    needs:
+      - monitoring/kube-prometheus-stack
+    {{ else }}
+    set:
+      - name: metrics.serviceMonitor.enabled
+        value: false
+    {{ end }}
   {{ end }}
 
   # DynamoDB Local - deployed via kubectl when DATASTORE=dynamodb
@@ -70,9 +92,10 @@ releases:
   - name: ld-relay
     namespace: default
     chart: launchdarkly-ld-relay/ld-relay
-    version: ""
+    version: "3.11.2"
     values:
       - ld-relay-values.yaml
+      - ld-relay-values-{{ env "RELAY_VERSION" | default "v8" }}.yaml
       - ld-relay-secrets.yaml
       {{ if eq (env "DATASTORE" | default "redis") "redis" }}
       - ld-relay-values-redis.yaml
@@ -82,20 +105,29 @@ releases:
       {{ else }}
       - ld-relay-values-none.yaml
       {{ end }}
-    {{ if eq (env "DATASTORE" | default "redis") "redis" }}
-    needs:
-      - redis
-    {{ else if eq (env "DATASTORE" | default "redis") "dynamodb" }}
-    needs:
-      - dynamodb-local
+    # v9 pushes telemetry to the OTel Collector, which is only deployed with the monitoring stack
+    {{ if and (eq (env "RELAY_VERSION" | default "v8") "v9") (ne (env "MONITORING" | default "full") "full") }}
+    set:
+      - name: relay.environment.USE_OTLP
+        value: "false"
     {{ end }}
+    needs:
+      {{ if eq (env "DATASTORE" | default "redis") "redis" }}
+      - redis
+      {{ else if eq (env "DATASTORE" | default "redis") "dynamodb" }}
+      - dynamodb-local
+      {{ end }}
+      # Start v9 after the collector so its first OTLP exports don't fail
+      {{ if and (eq (env "RELAY_VERSION" | default "v8") "v9") (eq (env "MONITORING" | default "full") "full") }}
+      - monitoring/otel-collector
+      {{ end }}
 
   # Monitoring Stack - only deployed when MONITORING=full
   {{ if eq (env "MONITORING" | default "full") "full" }}
   - name: kube-prometheus-stack
     namespace: monitoring
     chart: prometheus-community/kube-prometheus-stack
-    version: ""
+    version: "92.10.1"
     values:
       - prometheus-values.yaml
     hooks:
@@ -103,6 +135,16 @@ releases:
         showlogs: true
         command: "kubectl"
         args: ["apply", "-f", "ld-relay-alerts.yaml"]
+      # Version-specific alerts; remove the other version's rules so a switch leaves none stale
+      {{ $relayVersion := env "RELAY_VERSION" | default "v8" }}
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["apply", "-f", "ld-relay-alerts-{{ $relayVersion }}.yaml"]
+      - events: ["postsync"]
+        showlogs: true
+        command: "kubectl"
+        args: ["delete", "prometheusrule", "ld-relay-alerts-{{ if eq $relayVersion "v8" }}v9{{ else }}v8{{ end }}", "-n", "default", "--ignore-not-found=true"]
       {{ if eq (env "DATASTORE" | default "redis") "redis" }}
       - events: ["postsync"]
         showlogs: true
@@ -119,11 +161,26 @@ releases:
   - name: prometheus-blackbox-exporter
     namespace: monitoring
     chart: prometheus-community/prometheus-blackbox-exporter
-    version: ""
+    version: "11.20.0"
     values:
       - blackbox-exporter-values.yaml
+      {{ if eq (env "RELAY_VERSION" | default "v8") "v9" }}
+      - blackbox-exporter-values-v9.yaml.gotmpl
+      {{ end }}
     needs:
       - kube-prometheus-stack
+
+  # OpenTelemetry Collector - receives LD Relay v9 OTLP and exposes it to Prometheus
+  {{ if eq (env "RELAY_VERSION" | default "v8") "v9" }}
+  - name: otel-collector
+    namespace: monitoring
+    chart: open-telemetry/opentelemetry-collector
+    version: "0.176.0"
+    values:
+      - otel-collector-values.yaml
+    needs:
+      - kube-prometheus-stack
+  {{ end }}
   {{ end }}
 
   # RedisInsight - deployed when DB_VIEWER=true and DATASTORE=redis

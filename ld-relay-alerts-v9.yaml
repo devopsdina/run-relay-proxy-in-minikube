@@ -1,0 +1,113 @@
+# LD Relay v9 alerts - applied when RELAY_VERSION=v9
+# v9 pushes OTLP metrics through the OpenTelemetry Collector (job="ld-relay-otel"); Relay's own
+# series carry job="ld-relay". Names follow the v9.0.0-rc.6 metrics doc; rc.7 renames attributes again.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: ld-relay-alerts-v9
+  namespace: default
+  labels:
+    app: ld-relay
+    prometheus: kube-prometheus-stack
+spec:
+  groups:
+    - name: ld-relay-v9
+      interval: 30s
+      rules:
+        # Per-environment status, probed by the blackbox exporter with the v9 ?expect= assertions
+        # (blackbox-exporter-values-v9.yaml.gotmpl). A failed assertion returns 412, an unknown
+        # environment 404, and an uninitialized Relay 503
+        - alert: LDRelayEnvironmentUnhealthy
+          expr: probe_success{job="prometheus-blackbox-exporter", target=~"ld-relay-env-.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "LD Relay environment is not connected"
+            description: "{{ $labels.target }}: /status/<env> is not connected with a VALID data source for more than 2 minutes."
+
+        # The top-level "healthy" status ignores the data store, so it is probed separately
+        - alert: LDRelayDataStoreUnhealthy
+          expr: probe_success{job="prometheus-blackbox-exporter", target=~"ld-relay-datastore-.*"} == 0
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "LD Relay data store is not VALID"
+            description: "{{ $labels.target }}: the persistent store is not VALID for more than 2 minutes."
+
+        # Relay stopped pushing telemetry. target_info is refreshed on each export and expires from
+        # the collector after metric_expiration (otel-collector-values.yaml)
+        - alert: LDRelayTelemetryMissing
+          expr: absent(target_info{job="ld-relay"})
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay is not exporting OTLP metrics"
+            description: "No LD Relay metrics have reached Prometheus through the OpenTelemetry Collector for more than 2 minutes."
+
+        - alert: LDRelayOTelCollectorDown
+          expr: up{job="ld-relay-otel"} == 0
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "OpenTelemetry Collector scrape endpoint is down"
+            description: "Prometheus cannot scrape LD Relay metrics from the OpenTelemetry Collector."
+
+        # Replaces v8 launchdarkly_relay_connections. Severity is info because an idle local
+        # environment legitimately has no SDKs connected
+        - alert: LDRelayNoSDKStreams
+          expr: sum(http_server_active_requests{job="ld-relay", launchdarkly_relay_endpoint_type="stream"}) < 1
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: "No SDK stream connections to LD Relay"
+            description: "No SDKs have held a stream connection to LD Relay for 5 minutes."
+
+        # Streaming responses are not recorded in the duration histogram, so this covers
+        # polling, evaluation, events and status requests
+        - alert: LDRelayHighErrorRate
+          expr: |
+            sum(rate(http_server_request_duration_seconds_count{job="ld-relay", http_response_status_code=~"5.."}[5m]))
+              /
+            sum(rate(http_server_request_duration_seconds_count{job="ld-relay"}[5m])) > 0.05
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay has high error rate"
+            description: "More than 5% of LD Relay requests returned 5xx for 5 minutes."
+
+        - alert: LDRelayEventsFailed
+          expr: sum(increase(launchdarkly_relay_events_failed_total{job="ld-relay"}[10m])) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay failed to deliver analytics events"
+            description: "LD Relay could not deliver {{ $value }} events to LaunchDarkly after retries in the last 10 minutes."
+
+        - alert: LDRelayEventsDropped
+          expr: sum(increase(launchdarkly_relay_events_dropped_total{job="ld-relay"}[10m])) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay dropped analytics events"
+            description: "LD Relay dropped {{ $value }} events due to capacity overflow in the last 10 minutes."
+
+        # Once an instrument reaches OTEL_METRICS_CARDINALITY_LIMIT (default 2000), new attribute
+        # sets are silently merged into one otel_metric_overflow="true" series
+        - alert: LDRelayMetricCardinalityOverflow
+          expr: count({job="ld-relay", otel_metric_overflow="true"}) > 0
+          labels:
+            severity: warning
+          annotations:
+            summary: "LD Relay metrics hit the OTel cardinality limit"
+            description: "Some LD Relay series are being merged into an overflow series. Raise OTEL_METRICS_CARDINALITY_LIMIT."
+
+        # rc.7+ exports /status as metrics; once pinned to rc.7 this can replace the blackbox probes:
+        # - alert: LDRelayDegraded
+        #   expr: launchdarkly_relay_status{launchdarkly_relay_state="degraded"} == 1
+        #   for: 2m
