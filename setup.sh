@@ -316,13 +316,22 @@ echo ""
 case "$RELAY_VERSION_CHOICE" in
     "v8 - "*)
         export RELAY_VERSION="v8"
-        RELAY_VERSION_DISPLAY="v8 (${V8_TAG})"
+        RELAY_TAG="${RELAY_IMAGE_TAG:-$V8_TAG}"
+        RELAY_VERSION_DISPLAY="v8 (${RELAY_TAG})"
         ;;
     "v9 - "*)
         export RELAY_VERSION="v9"
-        RELAY_VERSION_DISPLAY="v9 (${V9_TAG}, release candidate)"
+        RELAY_TAG="${RELAY_IMAGE_TAG:-$V9_TAG}"
+        RELAY_VERSION_DISPLAY="v9 (${RELAY_TAG}, release candidate)"
         ;;
 esac
+
+# The tag's major version must match the selected version; helmfile enforces this too
+if [[ ! "$RELAY_TAG" =~ ^${RELAY_VERSION#v}([.-]|$) ]]; then
+    echo -e "${RED}✗${NC} Relay image tag \"${RELAY_TAG}\" is not a ${RELAY_VERSION} release."
+    echo "  Use a ${RELAY_VERSION} tag in ld-relay-values-${RELAY_VERSION}.yaml (or RELAY_IMAGE_TAG), or pick the matching version."
+    exit 1
+fi
 
 case "$DATASTORE_CHOICE" in
     "Redis (local)")

@@ -94,17 +94,28 @@ image:
   tag: "8.22.0"
 ```
 
-To try a version once without editing files, pass `--set image.tag=...` and limit the sync to the `ld-relay` release with `-l name=ld-relay`, so the override doesn't reach the other charts. Use the same `RELAY_VERSION`, `DATASTORE` and `MONITORING` values as the running deployment:
+To try a version once without editing files, set `RELAY_IMAGE_TAG`. It works with `./setup.sh` and with helmfile. With helmfile, `-l name=ld-relay` syncs only the Relay release. Use the same `RELAY_VERSION`, `DATASTORE` and `MONITORING` values as the running deployment:
 
 ```bash
 # A different v8 release
-RELAY_VERSION=v8 DATASTORE=redis MONITORING=full \
-  helmfile -l name=ld-relay sync --set image.tag=8.22.0
+RELAY_VERSION=v8 RELAY_IMAGE_TAG=8.22.0 DATASTORE=redis MONITORING=full \
+  helmfile -l name=ld-relay sync
 
 # A different v9 release candidate
-RELAY_VERSION=v9 DATASTORE=redis MONITORING=full \
-  helmfile -l name=ld-relay sync --set image.tag=9.0.0-rc.5
+RELAY_VERSION=v9 RELAY_IMAGE_TAG=9.0.0-rc.5 DATASTORE=redis MONITORING=full \
+  helmfile -l name=ld-relay sync
+
+# Or through the interactive setup
+RELAY_IMAGE_TAG=8.22.0 ./setup.sh
 ```
+
+The tag must belong to the selected major version: an 8.x tag for `v8`, a 9.x tag for `v9`. Each overlay carries its version's probes, metrics and config, so a mismatch isn't a valid deployment. `./setup.sh` and helmfile both stop with an error if the tag in the overlay or in `RELAY_IMAGE_TAG` doesn't match:
+
+```
+Relay image tag "9.0.0-rc.6" is not a v8 release. Use a v8 tag, or set RELAY_VERSION to match the tag.
+```
+
+Don't override the tag with `helmfile sync --set image.tag=...`. Helmfile can't see `--set` values, so they skip this check.
 
 To see which tag is running:
 
@@ -114,9 +125,8 @@ kubectl get deployment ld-relay -o jsonpath='{.spec.template.spec.containers[0].
 
 Notes:
 
-- A one-off `--set` override lasts only until the next `./setup.sh` or plain `helmfile sync`, which goes back to the tag in the overlay file.
-- The `./setup.sh` menu and summary read the tag from the overlay files, so they show the file's tag, not a one-off `--set` override. Check the running image with the `kubectl` command above.
-- Keep the tag within the major version you selected. A v9 tag with `RELAY_VERSION=v8` deploys v9 with v8's probes, metrics and config.
+- A `RELAY_IMAGE_TAG` override lasts only until the next `./setup.sh` or `helmfile sync` without it, which goes back to the tag in the overlay file.
+- The `./setup.sh` version menu shows the overlay tags. The summary shows the tag that will deploy, including a `RELAY_IMAGE_TAG` override.
 - For v9, metric and attribute names change between RCs. The alert rules in `ld-relay-alerts-v9.yaml` and the collector config follow rc.6, so check the [ld-relay release notes](https://github.com/launchdarkly/ld-relay/releases) before switching to another RC.
 
 ---

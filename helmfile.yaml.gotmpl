@@ -6,6 +6,7 @@
 #   DB_VIEWER: true|false (default: false) - Deploy database management UI
 #   RELAY_VERSION: v8|v9 (default: v8) - v8 = GA, v9 = release candidate. The exact image tag
 #     is pinned in ld-relay-values-v8.yaml / ld-relay-values-v9.yaml
+#   RELAY_IMAGE_TAG: optional one-off override of that tag; must match RELAY_VERSION's major version
 #
 # Usage with interactive setup:
 #   ./setup.sh
@@ -21,6 +22,14 @@
 {{ end }}
 
 ---
+
+{{/* The tag's major version must match RELAY_VERSION: each overlay carries that version's probes, metrics and config */}}
+{{ $relayVersion := env "RELAY_VERSION" | default "v8" }}
+{{ $overlayTag := (readFile (printf "ld-relay-values-%s.yaml" $relayVersion) | fromYaml).image.tag | toString }}
+{{ $relayTag := env "RELAY_IMAGE_TAG" | default $overlayTag }}
+{{ if not (regexMatch (printf "^%s([.-]|$)" (trimPrefix "v" $relayVersion)) $relayTag) }}
+{{ fail (printf "Relay image tag %q is not a %s release. Use a %s tag, or set RELAY_VERSION to match the tag." $relayTag $relayVersion $relayVersion) }}
+{{ end }}
 
 repositories:
   - name: launchdarkly-ld-relay
@@ -107,11 +116,13 @@ releases:
       - ld-relay-values-none.yaml
       {{ end }}
     # v9 pushes telemetry to the OTel Collector, which is only deployed with the monitoring stack
-    {{ if and (eq (env "RELAY_VERSION" | default "v8") "v9") (ne (env "MONITORING" | default "full") "full") }}
     set:
+      - name: image.tag
+        value: {{ $relayTag | quote }}
+      {{ if and (eq (env "RELAY_VERSION" | default "v8") "v9") (ne (env "MONITORING" | default "full") "full") }}
       - name: relay.environment.USE_OTLP
         value: "false"
-    {{ end }}
+      {{ end }}
     needs:
       {{ if eq (env "DATASTORE" | default "redis") "redis" }}
       - redis
