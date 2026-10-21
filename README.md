@@ -55,7 +55,7 @@ This repo can deploy either of two LD Relay versions. Pick one in `./setup.sh`, 
 
 | | v8 (default) | v9 |
 |---|---|---|
-| Image | `launchdarkly/ld-relay:8.23.1` (GA) | `launchdarkly/ld-relay:9.0.0-rc.6` (release candidate) |
+| Image | `launchdarkly/ld-relay`, GA (tag pinned in `ld-relay-values-v8.yaml`) | `launchdarkly/ld-relay`, release candidate (tag pinned in `ld-relay-values-v9.yaml`) |
 | Values overlay | `ld-relay-values-v8.yaml` | `ld-relay-values-v9.yaml` |
 | Metrics | Prometheus `/metrics` on port 8031, scraped directly | OTLP push only, no `/metrics` endpoint. Relay sends metrics, traces and logs to an OpenTelemetry Collector, and Prometheus scrapes the collector on port 8889 |
 | Metric names | `launchdarkly_relay_connections`, `launchdarkly_relay_requests`, ... | `http_server_active_requests`, `launchdarkly_relay_requests_total`, `http_server_request_duration_seconds`, ... |
@@ -76,6 +76,48 @@ To switch versions, tear down the current deployment first (`./setup.sh` offers 
 Everything else is shared between the two versions: SDK keys, datastore overlays, cache and connection settings, the blackbox health check, and the pod restart alert.
 
 **About v9:** it's a release candidate and each RC has renamed metrics or attributes, so the image is pinned to an exact RC. rc.6 still serves payload filters and doesn't yet have every v8 feature (multiple concurrent SDK keys, the Redis connect and read timeouts). See [Known issues](#known-issues) and the [v9.0.0-rc.6 docs](https://github.com/launchdarkly/ld-relay/tree/v9.0.0-rc.6/docs).
+
+### Using a different v8 or v9 release
+
+`RELAY_VERSION` only picks the major version. The exact image tag comes from the `image.tag` in that version's values overlay:
+
+| `RELAY_VERSION` | Tag set in |
+|---|---|
+| `v8` | `ld-relay-values-v8.yaml` |
+| `v9` | `ld-relay-values-v9.yaml` |
+
+To change the version for every deployment, edit the tag in the overlay. `./setup.sh` and `helmfile sync` both pick it up:
+
+```yaml
+# ld-relay-values-v8.yaml
+image:
+  tag: "8.22.0"
+```
+
+To try a version once without editing files, pass `--set image.tag=...` and limit the sync to the `ld-relay` release with `-l name=ld-relay`, so the override doesn't reach the other charts. Use the same `RELAY_VERSION`, `DATASTORE` and `MONITORING` values as the running deployment:
+
+```bash
+# A different v8 release
+RELAY_VERSION=v8 DATASTORE=redis MONITORING=full \
+  helmfile -l name=ld-relay sync --set image.tag=8.22.0
+
+# A different v9 release candidate
+RELAY_VERSION=v9 DATASTORE=redis MONITORING=full \
+  helmfile -l name=ld-relay sync --set image.tag=9.0.0-rc.5
+```
+
+To see which tag is running:
+
+```bash
+kubectl get deployment ld-relay -o jsonpath='{.spec.template.spec.containers[0].image}'
+```
+
+Notes:
+
+- A one-off `--set` override lasts only until the next `./setup.sh` or plain `helmfile sync`, which goes back to the tag in the overlay file.
+- The `./setup.sh` menu and summary read the tag from the overlay files, so they show the file's tag, not a one-off `--set` override. Check the running image with the `kubectl` command above.
+- Keep the tag within the major version you selected. A v9 tag with `RELAY_VERSION=v8` deploys v9 with v8's probes, metrics and config.
+- For v9, metric and attribute names change between RCs. The alert rules in `ld-relay-alerts-v9.yaml` and the collector config follow rc.6, so check the [ld-relay release notes](https://github.com/launchdarkly/ld-relay/releases) before switching to another RC.
 
 ---
 
