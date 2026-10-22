@@ -282,11 +282,16 @@ gum style \
 
 echo ""
 
+# Read the pinned image tags from the values overlays so the labels match what deploys
+relay_tag() { sed -n 's/^  tag: "\(.*\)".*/\1/p' "ld-relay-values-$1.yaml"; }
+V8_TAG=$(relay_tag v8)
+V9_TAG=$(relay_tag v9)
+
 # Prompt for Relay version selection
 gum style --bold "Select LD Relay Version:"
 RELAY_VERSION_CHOICE=$(gum choose \
-    "v8 - 8.23.1 (GA, recommended)" \
-    "v9 - 9.0.0-rc.6 (release candidate)")
+    "v8 - ${V8_TAG} (GA, recommended)" \
+    "v9 - ${V9_TAG} (release candidate)")
 
 echo ""
 
@@ -309,15 +314,24 @@ echo ""
 
 # Map choices to environment variables
 case "$RELAY_VERSION_CHOICE" in
-    "v8 - 8.23.1 (GA, recommended)")
+    "v8 - "*)
         export RELAY_VERSION="v8"
-        RELAY_VERSION_DISPLAY="v8 (8.23.1)"
+        RELAY_TAG="${RELAY_IMAGE_TAG:-$V8_TAG}"
+        RELAY_VERSION_DISPLAY="v8 (${RELAY_TAG})"
         ;;
-    "v9 - 9.0.0-rc.6 (release candidate)")
+    "v9 - "*)
         export RELAY_VERSION="v9"
-        RELAY_VERSION_DISPLAY="v9 (9.0.0-rc.6, release candidate)"
+        RELAY_TAG="${RELAY_IMAGE_TAG:-$V9_TAG}"
+        RELAY_VERSION_DISPLAY="v9 (${RELAY_TAG}, release candidate)"
         ;;
 esac
+
+# The tag's major version must match the selected version; helmfile enforces this too
+if [[ ! "$RELAY_TAG" =~ ^${RELAY_VERSION#v}([.-]|$) ]]; then
+    echo -e "${RED}✗${NC} Relay image tag \"${RELAY_TAG}\" is not a ${RELAY_VERSION} release."
+    echo "  Use a ${RELAY_VERSION} tag in ld-relay-values-${RELAY_VERSION}.yaml (or RELAY_IMAGE_TAG), or pick the matching version."
+    exit 1
+fi
 
 case "$DATASTORE_CHOICE" in
     "Redis (local)")
